@@ -162,7 +162,7 @@ class DatabaseManager:
                 timestamp TEXT,
                 symbol TEXT,
                 instrument_type TEXT,
-                transaction_type TEXT, -- 'BUY' or 'SELL'
+                transaction_type TEXT, -- 'Buy' or 'SELL'
                 quantity INTEGER,
                 price REAL,
                 order_type TEXT, -- 'MARKET', 'LIMIT', 'SL', 'SL-M'

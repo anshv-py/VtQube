@@ -26,9 +26,9 @@ TRADE_COL_WIDTH = 140
 class QuotationWidget(QWidget):
     """
     Widget for displaying live market quotations (Stocks, Futures, Options)
-    and enabling direct trading actions (Bid/Ask).
+    and enabling direct trading actions (Buy/Sell).
     """
-    # Signal to emit when a Bid/Ask button is clicked or a log entry is double-clicked
+    # Signal to emit when a Buy/Sell button is clicked or a log entry is double-clicked
     open_trading_dialog = pyqtSignal(dict)
 
     def __init__(self, db_manager: DatabaseManager, stock_manager: InstrumentManager,
@@ -337,29 +337,29 @@ class QuotationWidget(QWidget):
             self.quotation_table.setItem(row_idx, col_offset, item_close)
             col_offset += 1
 
-            # Bid/Ask Buttons (within a container widget for layout control)
+            # Buy/Sell Buttons (within a container widget for layout control)
             button_container = QWidget()
             button_layout = QHBoxLayout(button_container)
             button_layout.setContentsMargins(0, 0, 0, 0) # Remove margins for tight fit
             button_layout.setSpacing(5) # Small spacing between buttons
 
-            bid_button = QPushButton("Bid")
-            bid_button.setStyleSheet("background-color: #28a745; color: white; border-radius: 5px; padding: 5px 10px;")
-            bid_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred) # Make button expand
-            bid_button.clicked.connect(
+            Buy_button = QPushButton("Buy")
+            Buy_button.setStyleSheet("background-color: #28a745; color: white; border-radius: 5px; padding: 5px 10px;")
+            Buy_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred) # Make button expand
+            Buy_button.clicked.connect(
                 lambda checked, s=symbol, it=instrument_type, p=ltp, ed=expiry_date, sp=strike_price:
-                self.on_bid_ask_clicked('BUY', s, it, p, ed, sp)
+                self.on_Buy_Sell_clicked('Buy', s, it, p, ed, sp)
             )
-            button_layout.addWidget(bid_button)
+            button_layout.addWidget(Buy_button)
 
-            ask_button = QPushButton("Ask")
-            ask_button.setStyleSheet("background-color: #dc3545; color: white; border-radius: 5px; padding: 5px 10px;")
-            ask_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred) # Make button expand
-            ask_button.clicked.connect(
+            Sell_button = QPushButton("Sell")
+            Sell_button.setStyleSheet("background-color: #dc3545; color: white; border-radius: 5px; padding: 5px 10px;")
+            Sell_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred) # Make button expand
+            Sell_button.clicked.connect(
                 lambda checked, s=symbol, it=instrument_type, p=ltp, ed=expiry_date, sp=strike_price:
-                self.on_bid_ask_clicked('SELL', s, it, p, ed, sp)
+                self.on_Buy_Sell_clicked('SELL', s, it, p, ed, sp)
             )
-            button_layout.addWidget(ask_button)
+            button_layout.addWidget(Sell_button)
 
             self.quotation_table.setCellWidget(row_idx, col_offset, button_container)
             
@@ -374,12 +374,12 @@ class QuotationWidget(QWidget):
         self.quotation_table.setSortingEnabled(True) # Re-enable sorting
 
 
-    def on_bid_ask_clicked(self, transaction_type: str, symbol: str, instrument_type: str,
+    def on_Buy_Sell_clicked(self, transaction_type: str, symbol: str, instrument_type: str,
                            price: str, expiry_date: str = None, strike_price: float = None):
         dialog_data = {
             "symbol": symbol,
             "instrument_type": instrument_type,
-            "transaction_type": transaction_type, # 'BUY' or 'SELL'
+            "transaction_type": transaction_type, # 'Buy' or 'SELL'
             "price": float(price.replace('₹', '')) if price != "N/A" else None # Convert price string to float
         }
         if expiry_date and expiry_date != "N/A":
@@ -388,7 +388,7 @@ class QuotationWidget(QWidget):
             dialog_data["strike_price"] = float(strike_price) # Ensure it's a float
         
         self.open_trading_dialog.emit(dialog_data)
-        print(f"DEBUG: Bid/Ask clicked - Type: {transaction_type}, Symbol: {symbol}, Price: {price}")
+        print(f"DEBUG: Buy/Sell clicked - Type: {transaction_type}, Symbol: {symbol}, Price: {price}")
 
     def update_quotation_data(self, data: dict):
         symbol = data.get('symbol')

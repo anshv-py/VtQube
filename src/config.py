@@ -129,20 +129,20 @@ class ConfigWidget(QWidget):
                 color: #333;
             }}
             QLabel {{
-                font-size: {int(afps * 1.1)}pt;
+                font-size: {int(afps * 1.3)}pt;
             }}
             QLineEdit, QSpinBox, QDoubleSpinBox, QTimeEdit, QComboBox, QCheckBox {{
                 padding: 8px;
                 border: 1px solid #ccc;
                 border-radius: 4px;
-                font-size: {int(afps * 1.1)}pt;
+                font-size: {int(afps * 1.3)}pt;
             }}
             QPushButton {{
                 background-color: #007bff;
                 color: white;
                 border: none;
                 padding: 10px 15px;
-                font-size: {int(afps * 1.1)}pt;
+                font-size: {int(afps * 1.3)}pt;
                 font-weight: bold;
                 border-radius: 5px;
             }}
@@ -237,7 +237,7 @@ class ConfigWidget(QWidget):
         self.budget_cap_spin.setDecimals(2)
         auto_trade_layout.addWidget(self.budget_cap_spin, 2, 1)
 
-        auto_trade_layout.addWidget(QLabel("Trade LTP % (for Bid/Ask):"), 7, 0)
+        auto_trade_layout.addWidget(QLabel("Trade LTP % (for Buy/Sell):"), 7, 0)
         self.trade_ltp_percentage_spin = QDoubleSpinBox()
         self.trade_ltp_percentage_spin.setRange(0.00, 100.00)
         self.trade_ltp_percentage_spin.setSingleStep(0.01)

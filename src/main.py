@@ -87,7 +87,7 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         """Initializes the main application UI."""
         self.setWindowTitle("VtQube v1.0.0")
-        # Use availableGeometry to maximize while respecting taskbar
+        # Use availableGeometry to maximize while respecting tSellbar
         screen_rect = QApplication.desktop().availableGeometry(self)
         self.setGeometry(screen_rect)
         self.showMaximized()
@@ -143,7 +143,7 @@ class MainWindow(QMainWindow):
 
         # Unified Pause/Resume Button
         self.toggle_pause_resume_btn = QPushButton("Pause Monitoring")
-        self.toggle_pause_resume_btn.setStyleSheet("background-color: #f0ad4e;") # Initial color: Orange for Paused state (if pressed)
+        self.toggle_pause_resume_btn.setStyleSheet("background-color: #f0ad4e;")
         self.toggle_pause_resume_btn.clicked.connect(self.toggle_monitoring_state)
         self.toggle_pause_resume_btn.setEnabled(False) # Initially disabled
         control_layout.addWidget(self.toggle_pause_resume_btn)
@@ -171,10 +171,6 @@ class MainWindow(QMainWindow):
         self.specific_symbol_input.returnPressed.connect(self.set_specific_monitored_symbol)
 
         specific_monitor_layout.addWidget(self.specific_symbol_input)
-        # Removed self.monitor_selected_btn as requested
-        # self.monitor_selected_btn = QPushButton("Set Monitored Instrument")
-        # self.monitor_selected_btn.clicked.connect(self.set_specific_monitored_symbol)
-        # specific_monitor_layout.addWidget(self.monitor_selected_btn)
 
         monitoring_layout.addWidget(control_frame)
         monitoring_layout.addWidget(specific_monitor_group)
@@ -380,7 +376,7 @@ class MainWindow(QMainWindow):
             dialog_data = {
                 "symbol": live_data_for_symbol.symbol,
                 "instrument_type": live_data_for_symbol.instrument_type,
-                "transaction_type": "BUY", # Default to BUY when opening from live data
+                "transaction_type": "Buy", # Default to Buy when opening from live data
                 "price": live_data_for_symbol.price,
                 "expiry_date": live_data_for_symbol.expiry_date,
                 "strike_price": live_data_for_symbol.strike_price

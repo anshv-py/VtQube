@@ -10,7 +10,7 @@ from config import AlertConfig # To get default auto-trade settings (specificall
 
 class TradingDialog(QDialog):
     """
-    A dialog for placing buy/sell orders, pre-filled with instrument details
+    A dialog for placing Buy/sell orders, pre-filled with instrument details
     and auto-trading configuration.
     """
     order_placed = pyqtSignal(dict) # Signal to emit order details when placed
@@ -189,9 +189,9 @@ class TradingDialog(QDialog):
             self.strike_price_label.hide()
 
 
-        transaction_type = self.initial_data.get("transaction_type", "BUY")
+        transaction_type = self.initial_data.get("transaction_type", "Buy")
         self.transaction_type_label.setText(transaction_type)
-        if transaction_type == "BUY":
+        if transaction_type == "Buy":
             self.transaction_type_label.setStyleSheet("font-weight: bold; color: green;")
         else:
             self.transaction_type_label.setStyleSheet("font-weight: bold; color: red;")

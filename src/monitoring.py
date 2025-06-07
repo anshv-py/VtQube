@@ -173,7 +173,7 @@ class MonitoringThread(QThread):
             data = quote.get(str(instrument_token), {})
 
             # Calculate TBQ (Total Buy Quantity) and TSQ (Total Sell Quantity)
-            tbq = data.get('buy_quantity', 0)
+            tbq = data.get('Buy_quantity', 0)
             tsq = data.get('sell_quantity', 0)
 
             # Get current volume and LTP

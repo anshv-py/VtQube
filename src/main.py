@@ -91,7 +91,7 @@ class MainWindow(QMainWindow):
         screen_rect = QApplication.desktop().availableGeometry(self)
         self.setGeometry(screen_rect)
         self.showMaximized()
-        self.setWindowIcon(QIcon('icon.jpg')) # Set application icon here, ensure 'app_icon.png' exists
+        self.setWindowIcon(QIcon('assets/icon.jpg')) # Set application icon here, ensure 'app_icon.png' exists
         afps = QApplication.instance().font().pointSize() if QApplication.instance() else 10
 
         central_widget = QWidget()

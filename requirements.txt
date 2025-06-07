@@ -1,0 +1,6 @@
+pandas
+PyQt5
+python-dotenv
+kiteconnect
+twilio
+openpyxl

@@ -2,11 +2,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-SYMBOL_LIST = [
-    "RELIANCE", "HDFCBANK", "ICICIBANK", "KOTAKBANK",
-    "AXISBANK", "SBIN", "INFY", "TCS", "LT", "ITC",
-]
-
 class MonitoringStatus(Enum):
     STOPPED = "Stopped"
     RUNNING = "Running"

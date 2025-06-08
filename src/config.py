@@ -1,15 +1,13 @@
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
+    QWidget, QVBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QSpinBox, QTimeEdit, QMessageBox, QDoubleSpinBox, QCheckBox,
     QGroupBox, QComboBox, QApplication
 )
-from PyQt5.QtCore import QTime, pyqtSignal, QObject, Qt
+from PyQt5.QtCore import QTime, pyqtSignal, Qt
 from dataclasses import dataclass, field
 from typing import Optional
 import datetime
 import webbrowser
-import os
-import threading
 
 from database import DatabaseManager
 from utils import RequestTokenServer
@@ -17,7 +15,7 @@ from utils import RequestTokenServer
 try:
     from kiteconnect import KiteConnect
 except ImportError:
-    print("KiteConnect not installed. Please install it using: pip install kiteconnect")
+    QMessageBox.error("KiteConnect not installed. Try re-installing the application")
     KiteConnect = None
 
 @dataclass
@@ -43,29 +41,23 @@ class AlertConfig:
         self.telegram_bot_token = telegram_bot_token
         self.telegram_chat_id = telegram_chat_id
 
-        # Auto-trade specific settings
         self.auto_trade_enabled = auto_trade_enabled
         self.budget_cap = budget_cap
         self.trade_ltp_percentage = trade_ltp_percentage
         self.trade_on_tbq_tsq_alert = trade_on_tbq_tsq_alert
 
     def is_valid(self) -> bool:
-        """Checks if the essential configuration for monitoring is valid."""
-        # Basic validation for monitoring
         if not (self.tbq_tsq_threshold >= 0 and self.stability_threshold >= 0 and self.stability_duration >= 0):
             return False
         if self.start_time is None or self.end_time is None:
-            pass # Allow None for now, as they are optional for basic monitoring
+            pass
         return True
 
     def load_settings_from_db(self, db_manager: DatabaseManager):
-        """Loads all configuration settings from the database into this object."""
-        # Main config settings
         self.tbq_tsq_threshold = float(db_manager.get_setting("tbq_tsq_threshold", "0.0"))
         self.stability_threshold = float(db_manager.get_setting("stability_threshold", "0.0"))
         self.stability_duration = int(db_manager.get_setting("stability_duration", "0"))
         
-        # Time settings
         start_time_str = db_manager.get_setting("start_time")
         end_time_str = db_manager.get_setting("end_time")
         
@@ -82,14 +74,10 @@ class AlertConfig:
         self.telegram_bot_token = db_manager.get_setting("telegram_bot_token")
         self.telegram_chat_id = db_manager.get_setting("telegram_chat_id")
 
-        # Auto-trade specific settings
         self.auto_trade_enabled = db_manager.get_setting("auto_trade_enabled", "False") == "True"
         self.budget_cap = float(db_manager.get_setting("budget_cap", "0.0"))
         self.trade_ltp_percentage = float(db_manager.get_setting("trade_ltp_percentage", "0.0"))
         self.trade_on_tbq_tsq_alert = db_manager.get_setting("trade_on_tbq_tsq_alert", "True") == "True"
-
-        print("AlertConfig: Settings loaded from database.")
-
 
 class ConfigWidget(QWidget):
     api_keys_saved = pyqtSignal()
@@ -110,7 +98,6 @@ class ConfigWidget(QWidget):
         self.load_settings()
 
     def init_ui(self):
-        """Initializes the UI elements for the configuration tab."""
         layout = QVBoxLayout()
         afps = QApplication.instance().font().pointSize() if QApplication.instance() else 10
         self.setStyleSheet(f"""
@@ -135,7 +122,7 @@ class ConfigWidget(QWidget):
                 padding: 8px;
                 border: 1px solid #ccc;
                 border-radius: 4px;
-                font-size: {int(afps * 1.3)}pt;
+                font-size: {int(afps * 1.1)}pt;
             }}
             QPushButton {{
                 background-color: #007bff;
@@ -151,7 +138,6 @@ class ConfigWidget(QWidget):
             }}
         """)
 
-        # API Settings Group
         api_group = QGroupBox("KiteConnect API Settings")
         api_layout = QGridLayout()
 
@@ -177,7 +163,6 @@ class ConfigWidget(QWidget):
         api_group.setLayout(api_layout)
         layout.addWidget(api_group)
 
-        # Alert Settings Group
         alert_group = QGroupBox("Alert Thresholds & Market Hours")
         alert_layout = QGridLayout()
 
@@ -188,41 +173,39 @@ class ConfigWidget(QWidget):
         self.tbq_tsq_threshold_spin.setDecimals(2)
         alert_layout.addWidget(self.tbq_tsq_threshold_spin, 1, 1)
 
-        alert_layout.addWidget(QLabel("Stability Threshold (% Deviation):"), 4, 0) # Adjusted row
+        alert_layout.addWidget(QLabel("Stability Threshold (% Deviation):"), 4, 0)
         self.stability_threshold_spin = QDoubleSpinBox()
         self.stability_threshold_spin.setRange(0.01, 100.00)
         self.stability_threshold_spin.setSingleStep(0.01)
         self.stability_threshold_spin.setDecimals(2)
         alert_layout.addWidget(self.stability_threshold_spin, 4, 1)
 
-        alert_layout.addWidget(QLabel("Stability Duration (seconds):"), 5, 0) # Adjusted row
+        alert_layout.addWidget(QLabel("Stability Duration (seconds):"), 5, 0)
         self.stability_duration_spin = QSpinBox()
         self.stability_duration_spin.setRange(1, 3600)
         self.stability_duration_spin.setSingleStep(1)
         alert_layout.addWidget(self.stability_duration_spin, 5, 1)
 
-        alert_layout.addWidget(QLabel("Market Start Time:"), 6, 0) # Adjusted row
+        alert_layout.addWidget(QLabel("Market Start Time:"), 6, 0)
         self.start_time_edit = QTimeEdit()
         self.start_time_edit.setDisplayFormat("HH:mm:ss")
         alert_layout.addWidget(self.start_time_edit, 6, 1)
 
-        alert_layout.addWidget(QLabel("Market End Time:"), 7, 0) # Adjusted row
+        alert_layout.addWidget(QLabel("Market End Time:"), 7, 0)
         self.end_time_edit = QTimeEdit()
         self.end_time_edit.setDisplayFormat("HH:mm:ss")
         alert_layout.addWidget(self.end_time_edit, 7, 1)
 
-        # New: Refresh Interval for Monitoring Thread
         alert_layout.addWidget(QLabel("Refresh Interval (seconds):"), 8, 0)
         self.refresh_interval_spin = QSpinBox()
-        self.refresh_interval_spin.setRange(1, 60) # 1 to 60 seconds
+        self.refresh_interval_spin.setRange(1, 60)
         self.refresh_interval_spin.setSingleStep(1)
-        self.refresh_interval_spin.setValue(5) # Default 5 seconds
+        self.refresh_interval_spin.setValue(5)
         alert_layout.addWidget(self.refresh_interval_spin, 8, 1)
 
         alert_group.setLayout(alert_layout)
         layout.addWidget(alert_group)
 
-        # Auto Trading Settings Group (Moved from AutoTradeWidget)
         auto_trade_group = QGroupBox("Auto Trading Settings")
         auto_trade_layout = QGridLayout()
 
@@ -251,7 +234,6 @@ class ConfigWidget(QWidget):
         auto_trade_group.setLayout(auto_trade_layout)
         layout.addWidget(auto_trade_group)
 
-        # Telegram Settings Group
         telegram_group = QGroupBox("Telegram Notifications")
         telegram_layout = QGridLayout()
 
@@ -278,7 +260,6 @@ class ConfigWidget(QWidget):
         telegram_group.setLayout(telegram_layout)
         layout.addWidget(telegram_group)
 
-        # Save Button
         self.save_btn = QPushButton("Save Settings")
         self.save_btn.clicked.connect(self.save_settings)
         layout.addWidget(self.save_btn)
@@ -288,23 +269,19 @@ class ConfigWidget(QWidget):
         self.setLayout(layout)
 
     def toggle_api_secret_visibility(self, state):
-        """Toggles the visibility of the API Secret input."""
         if state == Qt.Checked:
             self.api_secret_input.setEchoMode(QLineEdit.Normal)
         else:
             self.api_secret_input.setEchoMode(QLineEdit.Password)
 
     def toggle_telegram_token_visibility(self, state):
-        """Toggles the visibility of the Telegram Bot Token input."""
         if state == Qt.Checked:
             self.telegram_bot_token_input.setEchoMode(QLineEdit.Normal)
         else:
             self.telegram_bot_token_input.setEchoMode(QLineEdit.Password)
 
     def load_settings(self):
-        """Loads settings from the database and populates the UI fields."""
         defaults = AlertConfig(
-            # Provide default values for non-default arguments first
             tbq_tsq_threshold=0.05,
             stability_threshold=0.01,
             stability_duration=300,
@@ -329,7 +306,6 @@ class ConfigWidget(QWidget):
         telegram_enabled_text = self.db_manager.get_setting("telegram_enabled", "Disabled")
         self.telegram_enabled_combo.setCurrentText(telegram_enabled_text)
 
-        # Load Auto Trading Settings
         self.enable_auto_trade_checkbox.setChecked(
             self.db_manager.get_setting("auto_trade_enabled", str(defaults.auto_trade_enabled)) == "True"
         )
@@ -344,11 +320,9 @@ class ConfigWidget(QWidget):
         )
 
     def save_settings(self):
-        """Saves current UI field values to the database."""
         self.db_manager.save_setting("api_key", self.api_key_input.text())
         self.db_manager.save_setting("api_secret", self.api_secret_input.text())
 
-        # Save re-added volume thresholds
         self.db_manager.save_setting("tbq_tsq_threshold", str(self.tbq_tsq_threshold_spin.value()))
         self.db_manager.save_setting("stability_threshold", str(self.stability_threshold_spin.value()))
         self.db_manager.save_setting("stability_duration", str(self.stability_duration_spin.value()))
@@ -360,7 +334,6 @@ class ConfigWidget(QWidget):
         self.db_manager.save_setting("telegram_chat_id", self.telegram_chat_id_input.text())
         self.db_manager.save_setting("telegram_enabled", self.telegram_enabled_combo.currentText())
 
-        # Save Auto Trading Settings
         self.db_manager.save_setting("auto_trade_enabled", str(self.enable_auto_trade_checkbox.isChecked()))
         self.db_manager.save_setting("budget_cap", str(self.budget_cap_spin.value()))
         self.db_manager.save_setting("trade_ltp_percentage", str(self.trade_ltp_percentage_spin.value()))
@@ -368,23 +341,18 @@ class ConfigWidget(QWidget):
         self.api_keys_saved.emit()
 
         QMessageBox.information(self, "Settings Saved", "Application settings have been saved successfully!")
-        print("ConfigWidget: Settings saved.")
 
     def get_config(self) -> AlertConfig:
-        """Returns an AlertConfig object based on current UI values."""
         return AlertConfig(
-            # Get values for non-default arguments first
             tbq_tsq_threshold=self.tbq_tsq_threshold_spin.value(),
             stability_threshold=self.stability_threshold_spin.value(),
             stability_duration=self.stability_duration_spin.value(),
             start_time=self.start_time_edit.time(),
             end_time=self.end_time_edit.time(),
 
-            # Then get values for default arguments
             telegram_bot_token=self.telegram_bot_token_input.text() if self.telegram_enabled_combo.currentText() == "Enabled" else None,
             telegram_chat_id=self.telegram_chat_id_input.text() if self.telegram_enabled_combo.currentText() == "Enabled" else None,
             
-            # Auto-trade specific fields
             auto_trade_enabled=self.enable_auto_trade_checkbox.isChecked(),
             budget_cap=self.budget_cap_spin.value(),
             trade_ltp_percentage=self.trade_ltp_percentage_spin.value(),
@@ -392,7 +360,6 @@ class ConfigWidget(QWidget):
         )
 
     def fetch_access_token(self):
-        """Initiates the process to fetch the KiteConnect access token."""
         api_key = self.api_key_input.text()
         api_secret = self.api_secret_input.text()
 
@@ -427,10 +394,8 @@ class ConfigWidget(QWidget):
         self.db_manager.save_setting("access_token", access_token)
         self.token_fetch_success.emit("Access Token fetched and saved successfully!")
         self.login_success.emit(access_token)
-        print(f"ConfigWidget: Access Token received and saved: {access_token[:10]}...")
 
     def _on_server_error(self, error_message: str):
-        """Slot to handle errors from the HTTP server."""
         if self.request_token_server:
             self.request_token_server.stop()
             self.request_token_server = None

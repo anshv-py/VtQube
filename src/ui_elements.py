@@ -1,6 +1,5 @@
 from PyQt5.QtWidgets import QFrame, QLabel, QVBoxLayout, QApplication
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont
 
 def create_stat_card(title: str, value: str, color: str) -> QFrame:
     card = QFrame()
@@ -25,12 +24,11 @@ def create_stat_card(title: str, value: str, color: str) -> QFrame:
 
     title_label = QLabel(title)
     title_label.setAlignment(Qt.AlignCenter)
-    title_label.setStyleSheet(f"font-size: {int(afps * 1.2)}pt;") # Slightly increased font size for title
+    title_label.setStyleSheet(f"font-size: {int(afps * 1.2)}pt;")
 
     value_label = QLabel(value)
     value_label.setAlignment(Qt.AlignCenter)
-    value_label.setStyleSheet(f"font-size: {int(afps * 2.0)}pt; font-weight: bold;") # Slightly increased font size for value
-    # Set an object name so it can be found later for updates
+    value_label.setStyleSheet(f"font-size: {int(afps * 2.0)}pt; font-weight: bold;")
     value_label.setObjectName(f"{title.lower().replace(' ', '_').replace('%', '')}_value")
 
     layout.addWidget(title_label)

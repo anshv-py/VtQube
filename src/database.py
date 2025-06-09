@@ -90,33 +90,27 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS volume_logs (
                 timestamp TEXT,
                 symbol TEXT,
-                volume INTEGER,
-                opening_volume INTEGER,
-                change_percent REAL,
                 price REAL,
                 tbq INTEGER,
                 tsq INTEGER,
                 tbq_change_percent REAL,
                 tsq_change_percent REAL,
                 ratio REAL,
-                alert_triggered BOOLEAN,
+                remark TEXT,
                 open REAL,
                 high REAL,
                 low REAL,
                 close REAL,
-                is_tbq_baseline BOOLEAN DEFAULT 0,
-                is_tsq_baseline BOOLEAN DEFAULT 0,
                 instrument_type TEXT DEFAULT 'EQ',
                 expiry_date TEXT,
                 strike_price REAL
             )
         """)
+        self._add_column_if_not_exists(cursor, "volume_logs", "remark", "TEXT")
         self._add_column_if_not_exists(cursor, "volume_logs", "open", "REAL")
         self._add_column_if_not_exists(cursor, "volume_logs", "high", "REAL")
         self._add_column_if_not_exists(cursor, "volume_logs", "low", "REAL")
         self._add_column_if_not_exists(cursor, "volume_logs", "close", "REAL")
-        self._add_column_if_not_exists(cursor, "volume_logs", "is_tbq_baseline", "BOOLEAN DEFAULT 0")
-        self._add_column_if_not_exists(cursor, "volume_logs", "is_tsq_baseline", "BOOLEAN DEFAULT 0")
         self._add_column_if_not_exists(cursor, "volume_logs", "instrument_type", "TEXT DEFAULT 'EQ'")
         self._add_column_if_not_exists(cursor, "volume_logs", "expiry_date", "TEXT")
         self._add_column_if_not_exists(cursor, "volume_logs", "strike_price", "REAL")
@@ -179,35 +173,29 @@ class DatabaseManager:
         result = cursor.fetchone()
         return result[0] if result else default
     
-    def log_volume_data(self, data: VolumeData, alert_triggered: bool) -> int:
+    def log_volume_data(self, data: VolumeData, remark: Optional[str] = None) -> int:
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO volume_logs (
-                timestamp, symbol, volume, opening_volume, change_percent, price,
-                tbq, tsq, tbq_change_percent, tsq_change_percent, ratio, alert_triggered,
-                open, high, low, close, is_tbq_baseline, is_tsq_baseline, instrument_type,
+                timestamp, symbol, price, tbq, tsq, tbq_change_percent, tsq_change_percent, ratio, remark,
+                open, high, low, close, instrument_type,
                 expiry_date, strike_price
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data.timestamp,
             data.symbol,
-            data.volume,
-            data.opening_volume,
-            data.change_percent,
             data.price,
             data.tbq,
             data.tsq,
             data.tbq_change_percent,
             data.tsq_change_percent,
             data.ratio,
-            alert_triggered,
+            remark,
             data.open_price,
             data.high_price,
             data.low_price,
             data.close_price,
-            data.is_tbq_baseline,
-            data.is_tsq_baseline,
             data.instrument_type,
             data.expiry_date,
             data.strike_price
@@ -217,11 +205,10 @@ class DatabaseManager:
 
     def get_volume_logs(self, limit: int = 500, symbol: Optional[str] = None,
                         tbq_change_filter: Optional[Tuple[str, float]] = None,
-                        tsq_change_filter: Optional[Tuple[str, float]] = None,
-                        alert_status: Optional[str] = None) -> List[Tuple]:
+                        tsq_change_filter: Optional[Tuple[str, float]] = None) -> List[Tuple]:
         conn = self._get_connection()
         cursor = conn.cursor()
-        query = "SELECT timestamp, symbol, volume, opening_volume, change_percent, price, tbq, tsq, tbq_change_percent, tsq_change_percent, ratio, alert_triggered, open, high, low, close, is_tbq_baseline, is_tsq_baseline, instrument_type, expiry_date, strike_price FROM volume_logs WHERE 1=1"
+        query = "SELECT timestamp, symbol, price, tbq, tsq, tbq_change_percent, tsq_change_percent, ratio, remark, open, high, low, close, instrument_type, expiry_date, strike_price FROM volume_logs WHERE 1=1"
         params = []
 
         if symbol:
@@ -245,11 +232,6 @@ class DatabaseManager:
             elif filter_type == 'lesser_than':
                 query += " AND tsq_change_percent <= ?"
                 params.append(value)
-
-        if alert_status == "triggered":
-            query += " AND alert_triggered = 1"
-        elif alert_status == "not_triggered":
-            query += " AND alert_triggered = 0"
 
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
@@ -305,7 +287,7 @@ class DatabaseManager:
         cursor.execute("SELECT id, timestamp, symbol, instrument_type, transaction_type, quantity, price, order_type, product_type, status, message, order_id, alert_id FROM trades ORDER BY timestamp DESC")
         return cursor.fetchall()
     
-    def get_volume_data_by_alert_id(self, alert_id: int) -> Optional[Dict[str, Any]]:
+    def get_volume_data_by_id(self, alert_id: int) -> Optional[Dict[str, Any]]:
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT timestamp, symbol FROM alerts WHERE id = ?", (alert_id,))
@@ -314,10 +296,8 @@ class DatabaseManager:
         if alert_info:
             timestamp_str, symbol = alert_info
             cursor.execute("""
-                SELECT timestamp, symbol, volume, opening_volume, change_percent, price,
-                       tbq, tsq, tbq_change_percent, tsq_change_percent, ratio, alert_triggered,
-                       open, high, low, close, is_tbq_baseline, is_tsq_baseline, instrument_type,
-                       expiry_date, strike_price
+                SELECT timestamp, symbol, price, tbq, tsq, tbq_change_percent, tsq_change_percent, ratio, alert_triggered,
+                       open, high, low, close, instrument_type
                 FROM volume_logs
                 WHERE timestamp = ? AND symbol = ?
                 LIMIT 1
@@ -328,7 +308,7 @@ class DatabaseManager:
                 return {col[0]: volume_data[i] for i, col in enumerate(cursor.description)}
         return None
 
-    def get_all_tradable_instruments(self, instrument_type: Optional[str] = None, exchange: Optional[str] = None) -> List[Tuple[str, str, str, int, Optional[str], Optional[float]]]:
+    def get_all_tradable_instruments(self, instrument_type: Optional[str] = None, exchange: Optional[str] = None, option_category: Optional[str] = None) -> List[Tuple[str, str, str, int, Optional[str], Optional[float]]]:
         conn = self._get_connection()
         cursor = conn.cursor()
         query = "SELECT tradingsymbol, instrument_type, exchange, instrument_token, expiry, strike FROM tradable_instruments WHERE 1=1"
@@ -343,6 +323,27 @@ class DatabaseManager:
         if exchange:
             query += " AND exchange = ?"
             params.append(exchange)
+        if option_category:
+            if option_category == 'NIFTY':
+                query += " AND tradingsymbol LIKE ?"
+                params.append('NIFTY%')
+            elif option_category == 'BANK':
+                query += " AND tradingsymbol LIKE ?"
+                params.append('BANKNIFTY%')
+            elif option_category == 'FIN':
+                query += " AND tradingsymbol LIKE ?"
+                params.append('FINNIFTY%')
+            elif option_category == 'MIDCP':
+                query += " AND tradingsymbol LIKE ?"
+                params.append('MIDCPNIFTY%')
+            elif option_category == 'STOCK':
+                query += """ 
+                    AND tradingsymbol NOT LIKE ? 
+                    AND tradingsymbol NOT LIKE ? 
+                    AND tradingsymbol NOT LIKE ? 
+                    AND tradingsymbol NOT LIKE ?
+                """
+                params.extend(['NIFTY%', 'BANKNIFTY%', 'FINNIFTY%', 'MIDCPNIFTY%'])
         query += " ORDER BY tradingsymbol"
         
         cursor.execute(query, params)

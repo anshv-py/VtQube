@@ -96,10 +96,11 @@ class InstrumentManager(QObject):
         return filtered_df
 
 
-    def load_all_tradable_instruments_from_db(self):
+    def load_all_tradable_instruments_from_db(self, instrument_t: Optional[str] = None, option_category: Optional[str] = None):
         self.all_tradable_symbols = self.db_manager.get_all_tradable_instruments(
-            instrument_type=self.instrument_type,
-            exchange=self.exchange
+            instrument_type=instrument_t or self.instrument_type,
+            exchange=self.exchange,
+            option_category=option_category
         )
 
 

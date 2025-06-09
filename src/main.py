@@ -4,10 +4,11 @@ from typing import Dict, Any, Optional
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QHeaderView,
     QLabel, QPushButton, QTabWidget, QFrame, QStatusBar, QMessageBox,
-    QLineEdit, QGroupBox, QTableWidget, QTableWidgetItem, QCompleter
+    QLineEdit, QGroupBox, QTableWidget, QTableWidgetItem, QCompleter,
+    QAbstractItemView
 )
-from PyQt5.QtCore import QTimer, Qt, QStringListModel
-from PyQt5.QtGui import QColor, QIcon
+from PyQt5.QtCore import QTimer, Qt, QStringListModel, QThread, QObject, pyqtSignal
+from PyQt5.QtGui import QColor, QIcon, QKeyEvent
 from config import ConfigWidget, AlertConfig
 from database import DatabaseManager
 from monitoring import MonitoringThread, VolumeData
@@ -18,8 +19,46 @@ from utils import send_telegram_message, RequestTokenServer
 from instrument_fetch_thread import InstrumentFetchThread
 from quotation_widget import QuotationWidget
 from trading_dialog import TradingDialog
+from splash_screen import SplashScreen
 from kiteconnect import KiteConnect
 
+class DraggableTableWidget(QTableWidget):
+    enterPressed = pyqtSignal()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.viewport().setAcceptDrops(True)
+
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+            self.enterPressed.emit()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+class VolumeLoggerWorker(QObject):
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+
+    def __init__(self, db_path: str, data: VolumeData, remark: str = ""):
+        super().__init__()
+        self.db_path = db_path
+        self.data = data
+        self.remark = remark
+
+    def run(self):
+        try:
+            db = DatabaseManager(self.db_path)
+            db.log_volume_data(self.data, self.remark)
+            db.close()
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -43,16 +82,18 @@ class MainWindow(QMainWindow):
         self.instrument_fetch_thread: Optional[InstrumentFetchThread] = None
 
         self.current_live_data: Dict[str, VolumeData] = {}
-        self.previous_prices: Dict[str, float] = {}
         self.specific_monitored_symbol: Optional[str] = None
 
         self.end_of_day_timer = QTimer(self)
         self.end_of_day_timer.setSingleShot(True)
         self.end_of_day_timer.timeout.connect(self._delete_access_token_and_reschedule)
+        self.splash = SplashScreen(self)
+        # self.splash.show()
+        QApplication.processEvents()
 
         self.init_ui()
         self.load_settings()
-        self._initialize_kite_from_db_settings()
+        self._initialize_app_components()
 
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self.update_status_bar)
@@ -139,7 +180,7 @@ class MainWindow(QMainWindow):
         monitoring_layout.addWidget(control_frame)
         monitoring_layout.addWidget(specific_monitor_group)
 
-        self.live_data_table = QTableWidget()
+        self.live_data_table = DraggableTableWidget()
         self.live_data_table.setColumnCount(13)
         self.live_data_table.setHorizontalHeaderLabels([
             "Timestamp", "Symbol", "Type", "TBQ", "TBQ Chg %", "TSQ", "TSQ Chg %",
@@ -148,6 +189,13 @@ class MainWindow(QMainWindow):
         self.live_data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         monitoring_layout.addWidget(self.live_data_table)
         self.live_data_table.doubleClicked.connect(self.on_monitoring_table_double_clicked)
+        self.live_data_table.enterPressed.connect(self.apply_display_order_to_monitoring)
+
+        self.live_data_table.setDragEnabled(True)
+        self.live_data_table.setAcceptDrops(True)
+        self.live_data_table.setDropIndicatorShown(True)
+        self.live_data_table.setDragDropMode(QAbstractItemView.InternalMove)
+        self.live_data_table.viewport().setAcceptDrops(True)
 
         self.stat_cards_layout = QHBoxLayout()
         monitoring_layout.addLayout(self.stat_cards_layout)
@@ -185,6 +233,13 @@ class MainWindow(QMainWindow):
             card = create_stat_card(title, value, color)
             self.stat_cards_layout.addWidget(card)
             self.stat_cards[title.lower().replace(' ', '_').replace('%', '')] = card
+    
+    def _initialize_app_components(self):
+        # if self.splash:
+        #     self.splash.update_status("Initializing KiteConnect and fetching instruments...")
+        #     QApplication.processEvents()
+
+        self._initialize_kite_from_db_settings()
 
     def update_stat_card(self, title: str, value: str):
         key = title.lower().replace(' ', '_').replace('%', '')
@@ -229,6 +284,33 @@ class MainWindow(QMainWindow):
 
     def load_settings(self):
         self.config_widget.load_settings()
+    
+    def apply_display_order_to_monitoring(self):
+        new_monitored_order = []
+        for row in range(self.live_data_table.rowCount()):
+            symbol_item = self.live_data_table.item(row, 1) # Symbol is in column 1 (index 1)
+            if symbol_item:
+                new_monitored_order.append(symbol_item.text())
+
+        if not new_monitored_order:
+            QMessageBox.warning(self, "No Instruments", "No instruments displayed in the table to reorder.")
+            return
+
+        self._current_monitoring_order = new_monitored_order # Store the new order
+
+        QMessageBox.information(self, "Order Applied", "Display order saved. Restart monitoring to apply the new order.")
+
+        if self.monitoring_thread and self.monitoring_thread.isRunning():
+            reply = QMessageBox.question(
+                self, "Restart Monitoring?",
+                "Monitoring is currently running. Do you want to restart monitoring to apply the new order?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self.stop_monitoring()
+                self.start_monitoring() # This will now use the new self._current_monitoring_order
+        else:
+            QMessageBox.information(self, "Ready to Monitor", "New display order applied. Click 'Start Monitoring' to begin.")
 
     def on_api_keys_saved(self):
         api_key = self.db_manager.get_setting("api_key")
@@ -322,6 +404,10 @@ class MainWindow(QMainWindow):
         api_key = self.db_manager.get_setting("api_key")
         api_secret = self.db_manager.get_setting("api_secret")
         access_token = self.db_manager.get_setting("access_token")
+        last_fetch_date = datetime.datetime.strptime(self.db_manager.get_setting("last_instrument_fetch_date"), "%Y-%m-%d %H:%M:%S.%f")
+        if (last_fetch_date.date() < datetime.datetime.today().date()):
+            QMessageBox.critical(self, "Access Token Error", "Kindly Fetch Access Token Again!")
+            return
 
         if api_key and api_secret:
             try:
@@ -333,8 +419,7 @@ class MainWindow(QMainWindow):
                     self.fetch_all_tradable_instruments()
                     self._populate_completer_with_all_tradable_symbols()
                     self._schedule_access_token_deletion()
-                else:
-                    self.config_widget.show_login_button()
+                QMessageBox.information(self, "Kite Initialized", "Kite Initialization was successful")
             except ImportError:
                 QMessageBox.critical(self, "Error", "KiteConnect library not found. Please install it (`pip install kiteconnect`).")
                 self.kite = None
@@ -374,9 +459,7 @@ class MainWindow(QMainWindow):
 
         self.db_manager.reopen_connection()
         self.stock_manager.load_all_tradable_instruments_from_db()
-
         self.futures_manager.load_all_tradable_instruments_from_db()
-
         self.options_manager.load_all_tradable_instruments_from_db()
 
         self.stock_selection_widget.populate_all_symbols()
@@ -501,7 +584,6 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Status: Stopped")
         self.live_data_table.setRowCount(0)
         self.current_live_data.clear()
-        self.previous_prices.clear()
         self.update_monitoring_stat_cards()
 
     def update_live_data_table(self, data: VolumeData):
@@ -516,19 +598,15 @@ class MainWindow(QMainWindow):
             self.live_data_table.insertRow(row_idx)
 
         self.current_live_data[data.symbol] = data
-        
-        previous_price = self.previous_prices.get(data.symbol, data.price)
-        self.previous_prices[data.symbol] = data.price
-
 
         self.live_data_table.setItem(row_idx, 0, QTableWidgetItem(data.timestamp.split(' ')[1]))
         self.live_data_table.setItem(row_idx, 1, QTableWidgetItem(data.symbol))
         self.live_data_table.setItem(row_idx, 2, QTableWidgetItem(data.instrument_type if data.instrument_type else "N/A"))
         self.live_data_table.setItem(row_idx, 3, QTableWidgetItem(f"{data.tbq:,}"))
-        self.live_data_table.setItem(row_idx, 4, QTableWidgetItem(f"{data.tbq_change_percent:,}"))
+        self.live_data_table.setItem(row_idx, 4, QTableWidgetItem(f"{data.tbq_change_percent * 100:.2f}"))
         self.live_data_table.setItem(row_idx, 5, QTableWidgetItem(f"{data.tsq:,}"))
-        self.live_data_table.setItem(row_idx, 6, QTableWidgetItem(f"{data.tsq_change_percent:,}"))
-        self.live_data_table.setItem(row_idx, 7, QTableWidgetItem(f"₹{data.price:.2f}"))
+        self.live_data_table.setItem(row_idx, 6, QTableWidgetItem(f"{data.tsq_change_percent * 100:.2f}"))
+        self.live_data_table.setItem(row_idx, 8, QTableWidgetItem(f"₹{data.price:.2f}"))
         self.live_data_table.setItem(row_idx, 9, QTableWidgetItem(f"₹{data.open_price:.2f}"))
         self.live_data_table.setItem(row_idx, 10, QTableWidgetItem(f"₹{data.high_price:.2f}"))
         self.live_data_table.setItem(row_idx, 11, QTableWidgetItem(f"₹{data.low_price:.2f}"))
@@ -543,48 +621,47 @@ class MainWindow(QMainWindow):
         tsq_changed = data.tsq_change_percent is not None and abs(data.tsq_change_percent) >= tbq_threshold_percent
 
 
-        if tbq_changed and tsq_changed:
-            remark_text = f"TBQ ({data.tbq_change_percent:.2%}) || TSQ ({data.tsq_change_percent:.2%})"
-            remark_color = QColor(192, 255, 192)
-        elif tbq_changed:
-            remark_text = f"TBQ ({data.tbq_change_percent:.2%})"
-        elif tsq_changed:
-            remark_text = f"TSQ ({data.tsq_change_percent:.2%})"
+        if tbq_changed or tsq_changed:
+            tbq_rise = data.tbq_change_percent > 0 if tbq_changed else False
+            tsq_rise = data.tsq_change_percent > 0 if tsq_changed else False
 
-        if data.price > previous_price and data.price != previous_price:
-            if not (tbq_changed or tsq_changed):
-                 remark_color = QColor(173, 216, 230)
-            if remark_text:
-                remark_text += " | Price Rise"
+            remark_text = ""
+            if tbq_changed:
+                remark_text += f"TBQ ({data.tbq_change_percent:.2%})"
+            if tsq_changed:
+                if remark_text:
+                    remark_text += " || "
+                remark_text += f"TSQ ({data.tsq_change_percent:.2%})"
+
+            if tbq_rise or tsq_rise:
+                remark_color = QColor(173, 216, 230)
             else:
-                remark_text = "Price Rise"
-        elif data.price < previous_price and data.price != previous_price:
-            if not (tbq_changed or tsq_changed):
                 remark_color = QColor(255, 223, 186)
-            if remark_text:
-                remark_text += " | Price Fall"
-            else:
-                remark_text = "Price Fall"
+        else:
+            remark_text = ""
+            remark_color = QColor(255, 255, 255)
+
 
         remark_item = QTableWidgetItem(remark_text)
         remark_item.setBackground(remark_color)
-        self.live_data_table.setItem(row_idx, 8, remark_item)
-
-        self.live_data_table.resizeColumnsToContents()
+        self.live_data_table.setItem(row_idx, 7, remark_item)
 
         if self.tab_widget.currentWidget() == self.quotation_widget:
             self.quotation_widget.update_quotation_data(data)
         
-        self.db_manager.log_volume_data(data, False)
+        thread = QThread()
+        worker = VolumeLoggerWorker(self.db_manager.db_path, data, remark_text)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        worker.error.connect(lambda e: print(f"Volume logging error: {e}"))
+        thread.start()
         self.logs_widget.refresh_logs()
         self.update_monitoring_stat_cards()
 
-    def on_alert_triggered(self, symbol: str, combined_message_type_string: str, primary_alert_type: str, data: VolumeData, volume_log_id: int):
-        QMessageBox.information(self, f"Alert: {primary_alert_type}", f"Symbol: {symbol}\nMessage: {combined_message_type_string}\nLTP: {data.price:.2f}")
-        
-        self.db_manager.log_alert(data.timestamp, data.symbol, combined_message_type_string, primary_alert_type, volume_log_id=volume_log_id)
-        self.logs_widget.refresh_logs() # Refresh logs tab
-
+    def on_alert_triggered(self, symbol: str, combined_message_type_string: str, primary_alert_type: str, data: VolumeData):
         alerts_count = self.db_manager.get_alerts_count_today()
         self.update_stat_card("Total Alerts Today", str(alerts_count))
 
@@ -662,7 +739,7 @@ class MainWindow(QMainWindow):
         return self.kite.EXCHANGE_NSE
 
     def open_trading_dialog(self, data: Dict[str, Any]):
-        dialog = TradingDialog(self.kite, data, self.db_manager, self.config)
+        dialog = TradingDialog(self.db_manager, initial_data=data, kite_instance=self.kite, config=self.config)
         dialog.trade_placed.connect(self.logs_widget.refresh_logs)
         dialog.exec_()
 
@@ -722,8 +799,8 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
 
-    app.setApplicationName("Stock Volume Monitor Pro")
-    app.setApplicationVersion("1.0.0")
+    app.setApplicationName("VtQube-v1.0.2-beta")
+    app.setApplicationVersion("1.0.2")
     app.setOrganizationName("Trading Solutions")
 
     app.setStyle('Fusion')

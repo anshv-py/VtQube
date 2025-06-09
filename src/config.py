@@ -89,7 +89,7 @@ class ConfigWidget(QWidget):
     token_fetch_success = pyqtSignal(str)
     token_fetch_failure = pyqtSignal(str)
 
-    def __init__(self, db_manager):
+    def __init__(self, db_manager: DatabaseManager):
         super().__init__()
         self.db_manager = db_manager
         self.kite = None
@@ -392,6 +392,7 @@ class ConfigWidget(QWidget):
             self.request_token_server = None
 
         self.db_manager.save_setting("access_token", access_token)
+        self.db_manager.save_setting("last_instrument_fetch_date", str(datetime.datetime.now()))
         self.token_fetch_success.emit("Access Token fetched and saved successfully!")
         self.login_success.emit(access_token)
 

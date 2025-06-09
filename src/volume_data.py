@@ -12,9 +12,6 @@ class MonitoringStatus(Enum):
 class VolumeData:
     timestamp: str
     symbol: str
-    volume: int
-    opening_volume: int
-    change_percent: float
     price: float
     tbq: Optional[int] = None
     tsq: Optional[int] = None
@@ -26,8 +23,6 @@ class VolumeData:
     high_price: Optional[float] = None
     low_price: Optional[float] = None
     close_price: Optional[float] = None
-    is_tbq_baseline: Optional[bool] = False
-    is_tsq_baseline: Optional[bool] = False
     instrument_type: Optional[str] = None
     expiry_date: Optional[str] = None
     strike_price: Optional[float] = None

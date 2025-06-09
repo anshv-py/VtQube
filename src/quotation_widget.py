@@ -8,6 +8,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from database import DatabaseManager
 from stock_management import InstrumentManager
 from instrument_fetch_thread import InstrumentLoadThread
+from volume_data import VolumeData
 
 SYMBOL_COL_WIDTH = 120
 INSTRUMENT_TYPE_COL_WIDTH = 100
@@ -44,22 +45,38 @@ class QuotationWidget(QWidget):
         self.instrument_type_group = QButtonGroup(self)
         self.stocks_radio = QRadioButton("Stocks")
         self.futures_radio = QRadioButton("Futures")
-        self.options_radio = QRadioButton("Options")
+        self.nifty_options_radio = QRadioButton("NIFTY",)
+        self.banknifty_options_radio = QRadioButton("BANKNIFTY")
+        self.finnifty_options_radio = QRadioButton("FINNIFTY")
+        self.midcpnifty_options_radio = QRadioButton("MIDCPNIFTY")
+        self.stock_options_radio = QRadioButton("STOCK")
 
         self.instrument_type_group.addButton(self.stocks_radio)
         self.instrument_type_group.addButton(self.futures_radio)
-        self.instrument_type_group.addButton(self.options_radio)
+        self.instrument_type_group.addButton(self.nifty_options_radio)
+        self.instrument_type_group.addButton(self.banknifty_options_radio)
+        self.instrument_type_group.addButton(self.finnifty_options_radio)
+        self.instrument_type_group.addButton(self.midcpnifty_options_radio)
+        self.instrument_type_group.addButton(self.stock_options_radio)
 
         type_selection_layout.addWidget(self.stocks_radio)
         type_selection_layout.addWidget(self.futures_radio)
-        type_selection_layout.addWidget(self.options_radio)
+        type_selection_layout.addWidget(self.nifty_options_radio)
+        type_selection_layout.addWidget(self.banknifty_options_radio)
+        type_selection_layout.addWidget(self.finnifty_options_radio)
+        type_selection_layout.addWidget(self.midcpnifty_options_radio)
+        type_selection_layout.addWidget(self.stock_options_radio)
         type_selection_layout.addStretch()
 
         layout.addLayout(type_selection_layout)
 
         self.stocks_radio.toggled.connect(lambda: self.on_instrument_type_changed('EQ'))
         self.futures_radio.toggled.connect(lambda: self.on_instrument_type_changed('FUT'))
-        self.options_radio.toggled.connect(lambda: self.on_instrument_type_changed('OPT'))
+        self.nifty_options_radio.toggled.connect(lambda: self.on_instrument_type_changed('NIFTY'))
+        self.banknifty_options_radio.toggled.connect(lambda: self.on_instrument_type_changed('BANK'))
+        self.finnifty_options_radio.toggled.connect(lambda: self.on_instrument_type_changed('FIN'))
+        self.midcpnifty_options_radio.toggled.connect(lambda: self.on_instrument_type_changed('MIDCP'))
+        self.stock_options_radio.toggled.connect(lambda: self.on_instrument_type_changed('STOCK'))
 
         self.stocks_radio.setChecked(True)
 
@@ -135,19 +152,20 @@ class QuotationWidget(QWidget):
                 self.all_current_type_instruments = self.stock_manager.get_all_tradable_instruments()
             elif self.current_instrument_type == 'FUT':
                 self.all_current_type_instruments = self.futures_manager.get_all_tradable_instruments()
-            elif self.current_instrument_type == 'OPT':
-                self.all_current_type_instruments = self.options_manager.get_all_tradable_instruments()
+            elif self.current_instrument_type in ['NIFTY', 'BANK', 'FIN', 'MIDCP', 'STOCK']:
+                self.all_current_type_instruments = self.options_manager.load_all_tradable_instruments_from_db(option_category=self.current_instrument_type, instrument_t='OPT')
             else:
                 self.all_current_type_instruments = []
-
-            self._refresh_table_display()
 
             if not self.all_current_type_instruments:
                 QMessageBox.information(self, "No Instruments Found",
                                         f"No tradable instruments found for {self.current_instrument_type}. "
                                         "Please ensure your KiteConnect API is configured correctly and "
                                         "instruments have been fetched successfully in the Configuration tab.")
-        manager = self._get_manager_for_type(instrument_type)
+            
+            self._refresh_table_display()
+
+        manager = self._get_manager_for_type(instrument_type if instrument_type in ['EQ', 'FUT'] else 'OPT')
         
         if self.load_thread and self.load_thread.isRunning():
             self.load_thread.terminate()
@@ -183,8 +201,6 @@ class QuotationWidget(QWidget):
     def show_error(self, message):
         QMessageBox.critical(self, "Loading Error", message)
         self.quotation_table.setRowCount(0)
-
-
 
     def _refresh_table_display(self):
         self.quotation_table.setUpdatesEnabled(False)
@@ -340,13 +356,13 @@ class QuotationWidget(QWidget):
         
         self.open_trading_dialog.emit(dialog_data)
 
-    def update_quotation_data(self, data: dict):
-        symbol = data.get('symbol')
+    def update_quotation_data(self, data: VolumeData):
+        symbol = data.symbol
         if not symbol:
             return
         self.live_quotation_data[symbol] = data
 
-        updated_instrument_type = data.get('instrument_type')
+        updated_instrument_type = data.instrument_type
         if updated_instrument_type in ['CE', 'PE']:
             updated_instrument_type = 'OPT'
 
@@ -374,20 +390,20 @@ class QuotationWidget(QWidget):
                 except ValueError as e:
                     pass
                 
-                if tbq_col != -1 and data.get('tbq') is not None:
-                    self.quotation_table.item(row_idx, tbq_col).setText(f"{data['tbq']:,}")
-                if tsq_col != -1 and data.get('tsq') is not None:
-                    self.quotation_table.item(row_idx, tsq_col).setText(f"{data['tsq']:,}")
-                if ltp_col != -1 and data.get('price') is not None:
-                    self.quotation_table.item(row_idx, ltp_col).setText(f"₹{data['price']:.2f}")
-                if open_col != -1 and data.get('open_price') is not None:
-                    self.quotation_table.item(row_idx, open_col).setText(f"₹{data['open_price']:.2f}")
-                if high_col != -1 and data.get('high_price') is not None:
-                    self.quotation_table.item(row_idx, high_col).setText(f"₹{data['high_price']:.2f}")
-                if low_col != -1 and data.get('low_price') is not None:
-                    self.quotation_table.item(row_idx, low_col).setText(f"₹{data['low_price']:.2f}")
-                if close_col != -1 and data.get('close_price') is not None:
-                    self.quotation_table.item(row_idx, close_col).setText(f"₹{data['close_price']:.2f}")
+                if tbq_col != -1 and data.tbq is not None:
+                    self.quotation_table.item(row_idx, tbq_col).setText(f"{data.tbq:,}")
+                if tsq_col != -1 and data.tsq is not None:
+                    self.quotation_table.item(row_idx, tsq_col).setText(f"{data.tsq:,}")
+                if ltp_col != -1 and data.price is not None:
+                    self.quotation_table.item(row_idx, ltp_col).setText(f"₹{data.price:.2f}")
+                if open_col != -1 and data.open_price is not None:
+                    self.quotation_table.item(row_idx, open_col).setText(f"₹{data.open_price:.2f}")
+                if high_col != -1 and data.high_price is not None:
+                    self.quotation_table.item(row_idx, high_col).setText(f"₹{data.high_price:.2f}")
+                if low_col != -1 and data.low_price is not None:
+                    self.quotation_table.item(row_idx, low_col).setText(f"₹{data.low_price:.2f}")
+                if close_col != -1 and data.close_price is not None:
+                    self.quotation_table.item(row_idx, close_col).setText(f"₹{data.close_price:.2f}")
 
 
     def filter_table(self):

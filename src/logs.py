@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
-    QComboBox, QMenu, QAction, QMessageBox, QApplication, QDateEdit
+    QComboBox, QMenu, QMessageBox, QApplication, QDateEdit
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject, QThread
 from PyQt5.QtGui import QColor, QBrush, QFont
@@ -18,60 +18,14 @@ class LogRefreshWorker(QObject):
     def __init__(self, db_path):
         super().__init__()
         self.db_path = db_path
+        self.db_manager = None
 
     def run(self):
         try:
-            db_manager = DatabaseManager(self.db_path)
+            print("logs run")
+            self.db_manager = DatabaseManager(self.db_path)
             all_logs = []
-
-            alerts = db_manager.get_all_alerts()
-            for alert in alerts:
-                log_id, timestamp_str, symbol, message, alert_type, volume_log_id = alert
-                price = None
-                instrument_type = "N/A"
-                tbq = None
-                tbq_change_percent = None
-                tsq = None
-                tsq_change_percent = None
-                open_price = None
-                high_price = None
-                low_price = None
-                close_price = None
-
-                if log_id:
-                    volume_data_entry = db_manager.get_volume_data_by_id(log_id)
-                    if volume_data_entry:
-                        price = volume_data_entry.get('price')
-                        instrument_type = volume_data_entry.get('instrument_type')
-                        tbq = volume_data_entry.get('tbq')
-                        tbq_change_percent = volume_data_entry.get('tbq_change_percent')
-                        tsq = volume_data_entry.get('tsq')
-                        tsq_change_percent = volume_data_entry.get('tsq_change_percent')
-                        open_price = volume_data_entry.get('open')
-                        high_price = volume_data_entry.get('high')
-                        low_price = volume_data_entry.get('low')
-                        close_price = volume_data_entry.get('close')
-
-                all_logs.append({
-                    "log_id": log_id,
-                    "timestamp": timestamp_str,
-                    "symbol": symbol,
-                    "instrument_type": instrument_type,
-                    "tbq": tbq,
-                    "tbq_change_percent": tbq_change_percent,
-                    "tsq": tsq,
-                    "tsq_change_percent": tsq_change_percent,
-                    "price": price,
-                    "remark": message,
-                    "open_price": open_price,
-                    "high_price": high_price,
-                    "low_price": low_price,
-                    "close_price": close_price,
-                    "type_filter_category": "Alert",
-                    "is_initial_log": False # Default
-                })
-
-            all_volume_data = db_manager.get_volume_logs()
+            all_volume_data = self.db_manager.get_volume_logs()
             for volume_data in all_volume_data:
                 all_logs.append({
                     "timestamp": volume_data['timestamp'],
@@ -88,34 +42,7 @@ class LogRefreshWorker(QObject):
                     "low_price": volume_data['low'],
                     "close_price": volume_data['close'],
                     "type_filter_category": "Log",
-                    "is_initial_log": False # Default
-                })
-
-            trades = db_manager.get_all_trades()
-            for trade in trades:
-                (trade_id, timestamp_str, symbol, instrument_type, transaction_type,
-                 quantity, price, order_type, product_type, status, message, order_id, alert_id) = trade
-                trade_remark = f"Order: {transaction_type} {quantity} @ ₹{price:.2f} ({product_type}, {order_type}) Status: {status}"
-                if message and message != trade_remark:
-                    trade_remark += f" (Msg: {message})"
-
-                all_logs.append({
-                    "log_id": trade_id,
-                    "timestamp": timestamp_str,
-                    "symbol": symbol,
-                    "instrument_type": instrument_type,
-                    "tbq": None,
-                    "tbq_change_percent": None,
-                    "tsq": None,
-                    "tsq_change_percent": None,
-                    "price": price,
-                    "remark": trade_remark,
-                    "open_price": None,
-                    "high_price": None,
-                    "low_price": None,
-                    "close_price": None,
-                    "type_filter_category": "Trade",
-                    "is_initial_log": False # Default
+                    "is_initial_log": False
                 })
 
             all_logs.sort(key=lambda x: datetime.datetime.strptime(x['timestamp'], "%Y-%m-%d %H:%M:%S"))
@@ -134,7 +61,7 @@ class LogRefreshWorker(QObject):
         except Exception as e:
             self.error.emit(f"Failed to refresh logs: {str(e)}")
         finally:
-            db_manager.close()
+            self.db_manager.close()
 
 class LogsWidget(QWidget):
     log_row_double_clicked = pyqtSignal(dict)
@@ -145,8 +72,9 @@ class LogsWidget(QWidget):
         self.alerts_cache: List[Dict[str, Any]] = []
         self.seen_initial_log_for_symbol_date = set()
         self.init_ui()
+        self.log_thread = None
+        self.log_worker = None
         self.refresh_logs()
-
 
     def init_ui(self):
         afps = QApplication.instance().font().pointSize() if QApplication.instance() else 10
@@ -254,7 +182,9 @@ class LogsWidget(QWidget):
         self.symbol_filter_combo.blockSignals(True)
         self.symbol_filter_combo.clear()
         self.symbol_filter_combo.addItem("All Symbols")
-        
+
+        print("I CAME HERE 11")
+
         unique_symbols = sorted(list(set(log['symbol'] for log in self.alerts_cache if log.get('symbol'))))
         self.symbol_filter_combo.addItems(unique_symbols)
         self.symbol_filter_combo.blockSignals(False)
@@ -265,7 +195,6 @@ class LogsWidget(QWidget):
         type_filter = self.type_filter_combo.currentText()
         start_date = self.start_date_edit.date().toPyDate()
         end_date = self.end_date_edit.date().toPyDate()
-
         filtered_logs = []
         for log_entry in self.alerts_cache:
             log_date = datetime.datetime.strptime(log_entry['timestamp'], "%Y-%m-%d %H:%M:%S").date()
@@ -358,19 +287,51 @@ class LogsWidget(QWidget):
 
         self.log_table.resizeRowsToContents()
 
+    def cleanup_thread(self):
+        log_thread = self.log_thread
+        if log_thread:
+            try:
+                if log_thread.isRunning():
+                    if self.log_worker:
+                        self.log_worker.finished.disconnect()
+                        self.log_worker.error.disconnect()
+
+                    log_thread.quit()
+                    log_thread.wait(3000)
+
+                    if log_thread.isRunning():
+                        log_thread.terminate()
+                        log_thread.wait(1000)
+                log_thread.deleteLater()
+            except RuntimeError:
+                pass
+        
+        log_worker = self.log_worker
+        if log_worker:
+            try:
+                log_worker.deleteLater()
+            except RuntimeError:
+                pass
+        self.log_thread = None
+        self.log_worker = None
 
     def refresh_logs(self):
-        if hasattr(self, 'log_thread') and self.log_thread.isRunning():
-            self.log_thread.quit()
-            self.log_thread.wait()
+        self.cleanup_thread()
 
+        print("I CAME HERE 10")
         self.log_thread = QThread()
         self.log_worker = LogRefreshWorker(self.db_manager.db_path)
         self.log_worker.moveToThread(self.log_thread)
         self.log_thread.started.connect(self.log_worker.run)
         self.log_worker.finished.connect(self.handle_logs_refreshed)
         self.log_worker.error.connect(self.handle_log_error)
+
+        self.log_worker.finished.connect(self.log_thread.quit)
+        self.log_worker.error.connect(self.log_thread.quit)
+
+        self.log_thread.finished.connect(self.log_worker.deleteLater)
         self.log_thread.finished.connect(self.log_thread.deleteLater)
+
         self.log_thread.start()
 
     def handle_logs_refreshed(self, all_logs: List[Dict[str, Any]]):
@@ -545,7 +506,6 @@ class LogsWidget(QWidget):
             light_grey_format = workbook.add_format({'bg_color': '#F0F0F0'})   # Light Grey for alternating rows
             default_format = workbook.add_format()
 
-            # Write headers
             header_format = workbook.add_format({'bold': True, 'bg_color': '#F0F0F0', 'border': 1})
             for col_num, value in enumerate(df_for_excel.columns):
                 worksheet.write(0, col_num, value, header_format)
@@ -553,7 +513,6 @@ class LogsWidget(QWidget):
             remark_col_idx = df_for_excel.columns.get_loc('Remark') if 'Remark' in df_for_excel.columns else -1
             is_initial_log_col_idx = df_for_excel.columns.get_loc('Is Initial Log') if 'Is Initial Log' in df_for_excel.columns else -1
 
-            # Write data row by row with formatting
             for row_num in range(len(df_for_excel)):
                 excel_row = row_num + 1
 
@@ -603,25 +562,6 @@ class LogsWidget(QWidget):
 
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to clear logs: {str(e)}")
-
-    def start_log_refresh(self):
-        if hasattr(self, 'log_thread') and self.log_thread.isRunning():
-            self.log_thread.quit()
-            self.log_thread.wait()
-
-        self.log_thread = QThread()
-        self.log_worker = LogRefreshWorker(self.db_manager.db_path)
-        self.log_worker.moveToThread(self.log_thread)
-        self.log_thread.started.connect(self.log_worker.run)
-        self.log_worker.finished.connect(self.handle_logs_refreshed)
-        self.log_worker.error.connect(self.handle_log_error)
-        self.log_thread.finished.connect(self.log_thread.deleteLater)
-        self.log_thread.start()
-
-    def handle_logs_refreshed(self, all_logs):
-        self.alerts_cache = all_logs
-        self.populate_symbol_filter_combo()
-        self.filter_alerts_and_logs()
 
     def _on_table_double_clicked(self, index):
         row = index.row()

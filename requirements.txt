@@ -4,3 +4,4 @@ python-dotenv
 kiteconnect
 twilio
 openpyxl
+sip

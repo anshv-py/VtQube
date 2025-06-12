@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QSpinBox, QTimeEdit, QMessageBox, QDoubleSpinBox, QCheckBox,
-    QGroupBox, QComboBox, QApplication
+    QGroupBox, QComboBox, QApplication, QProgressBar
 )
 from PyQt5.QtCore import QTime, pyqtSignal, Qt
 from dataclasses import dataclass, field

@@ -38,7 +38,6 @@ class InstrumentManager(QObject):
             return 'NFO'
         return ''
 
-
     def set_kite_instance(self, kite_instance: KiteConnect):
         self.kite = kite_instance
 
@@ -95,22 +94,18 @@ class InstrumentManager(QObject):
             filtered_df = filtered_df.drop(columns=['exchange_upper'])
         return filtered_df
 
-
-    def load_all_tradable_instruments_from_db(self, instrument_t: Optional[str] = None, option_category: Optional[str] = None):
+    def load_all_tradable_instruments_from_db(self, option_t: Optional[str] = None, option_cat: Optional[str] = None):
         self.all_tradable_symbols = self.db_manager.get_all_tradable_instruments(
-            instrument_type=instrument_t or self.instrument_type,
+            instrument_type=option_t or self.instrument_type,
             exchange=self.exchange,
-            option_category=option_category
+            option_category=option_cat
         )
-
 
     def get_all_tradable_instruments(self) -> List[Tuple[str, str, str, int, Optional[str], Optional[float]]]:
         return self.all_tradable_symbols
 
-
     def load_user_instruments(self):
         self.user_selected_symbols = self.db_manager.load_user_instruments(self.user_table_name)
-
 
     def get_user_selected_symbols(self) -> List[str]:
         return self.user_selected_symbols
@@ -154,7 +149,6 @@ class InstrumentSelectionWidget(QWidget):
         self.monitored_instruments_list = QListWidget()
         self.completer_model = QStringListModel()
         self.completer = QCompleter(self.completer_model, self)
-        self.monitored_instruments_list = QListWidget()
 
         self.init_ui()
 
@@ -260,6 +254,7 @@ class InstrumentSelectionWidget(QWidget):
         monitored_layout = QVBoxLayout()
         monitored_group.setLayout(monitored_layout)
 
+        self.update_monitored_list()
         self.monitored_instruments_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         monitored_layout.addWidget(self.monitored_instruments_list)
 

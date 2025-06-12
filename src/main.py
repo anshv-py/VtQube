@@ -1,12 +1,14 @@
 import sys
+import time
 import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QHeaderView,
     QLabel, QPushButton, QTabWidget, QFrame, QStatusBar, QMessageBox,
     QLineEdit, QGroupBox, QTableWidget, QTableWidgetItem, QCompleter,
     QAbstractItemView
 )
+from pyqtspinner import WaitingSpinner
 from PyQt5.QtCore import QTimer, Qt, QStringListModel, QThread, QObject, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon, QKeyEvent
 from config import ConfigWidget, AlertConfig
@@ -17,11 +19,125 @@ from ui_elements import create_stat_card
 from stock_management import InstrumentManager, InstrumentSelectionWidget
 from utils import send_telegram_message, RequestTokenServer
 from instrument_fetch_thread import InstrumentFetchThread
-from quotation_widget import QuotationWidget
+from quotation_widget import TradingWidget
 from trading_dialog import TradingDialog
-from splash_screen import SplashScreen
 from kiteconnect import KiteConnect
+import traceback
 
+class QuotationFetcherWorker(QObject):
+    """
+    A worker thread for fetching live quotation data for a SINGLE specified instrument
+    from KiteConnect API and emitting it to the UI.
+    """
+    live_data_update = pyqtSignal(VolumeData)
+    error_occurred = pyqtSignal(str)
+    finished = pyqtSignal() # Signal to indicate worker has stopped
+
+    def __init__(self, kite: KiteConnect, db_path: str):
+        super().__init__()
+        self.kite = kite
+        self.db_path = db_path
+        self.symbol: Optional[str] = None # The trading symbol (e.g., RELIANCE)
+        self.instrument_token: Optional[int] = None
+        self.instrument_type: Optional[str] = None # EQ, FUT, CE, PE
+        self.exchange: Optional[str] = None # NSE, NFO etc.
+        self.expiry_date: Optional[str] = None
+        self.strike_price: Optional[float] = None
+        self._running = False # Control flag for the run loop
+        self.refresh_interval = 2 # seconds, for live quotes fetch
+        self.db_manager: Optional[DatabaseManager] = None # To be initialized in run()
+
+    def set_instrument_details(self, symbol: str, instrument_token: int, instrument_type: str, exchange: str, expiry_date: Optional[str], strike_price: Optional[float]):
+        """Sets the details of the instrument to fetch quotes for."""
+        self.symbol = symbol
+        self.instrument_token = instrument_token
+        self.instrument_type = instrument_type
+        self.exchange = exchange
+        self.expiry_date = expiry_date
+        self.strike_price = strike_price
+        self._running = True # Set running flag to True when details are set
+        print(f"DEBUG: QuotationFetcherWorker - Set instrument details: {symbol}, {instrument_type}, {exchange}, {instrument_token}")
+
+
+    def stop(self):
+        """Stops the quotation fetching loop gracefully."""
+        self._running = False
+
+    def run(self):
+        """Main loop for fetching live data for the single instrument."""
+        # Initialize DBManager here in the thread's context
+        self.db_manager = DatabaseManager(self.db_path)
+
+        if not self.kite:
+            self.error_occurred.emit("KiteConnect instance not available. Cannot fetch live quotes.")
+            self.finished.emit()
+            return
+
+        if not self.symbol or not self.instrument_token or not self.exchange:
+            self.error_occurred.emit("Instrument details not fully set for live quotation fetch.")
+            self.finished.emit()
+            return
+
+        # Construct the full trading symbol key (e.g., "NSE:RELIANCE", "NFO:NIFTY24AUGFUT")
+        full_symbol_key = f"{self.exchange}:{self.symbol}"
+        print(f"DEBUG: QuotationFetcherWorker - Starting live fetch for: {full_symbol_key}")
+
+        while self._running:
+            try:
+                # kite.quote takes a list of trading symbol strings
+                quote_data = self.kite.quote([full_symbol_key])
+                # print(f"DEBUG: QuotationFetcherWorker - Raw quote data for {full_symbol_key}: {quote_data}")
+
+                if quote_data and full_symbol_key in quote_data:
+                    tick = quote_data[full_symbol_key] # Use 'tick' as in previous logic
+                    current_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                    last_price = tick.get('last_price')
+                    ohlc = tick.get('ohlc', {})
+
+                    if last_price is None:
+                        print(f"WARNING: No last_price for {self.symbol}. Skipping update for this tick.")
+                        # Do not continue and sleep here, let the main sleep handle it
+                    else:
+                        buy_quantity = tick.get('buy_quantity', 0)
+                        sell_quantity = tick.get('sell_quantity', 0)
+
+                        ratio = buy_quantity / sell_quantity if sell_quantity else (buy_quantity / 0.0001 if buy_quantity else 0)
+
+                        # Create VolumeData object with available details
+                        data = VolumeData(
+                            timestamp=current_timestamp,
+                            symbol=self.symbol,
+                            instrument_type=self.instrument_type,
+                            price=last_price,
+                            tbq=buy_quantity,
+                            tsq=sell_quantity,
+                            ratio=ratio,
+                            open_price=ohlc.get('open'),
+                            high_price=ohlc.get('high'),
+                            low_price=ohlc.get('low'),
+                            close_price=ohlc.get('close'),
+                            expiry_date=self.expiry_date,
+                            strike_price=self.strike_price,
+                            tbq_change_percent=0.0,
+                            tsq_change_percent=0.0,
+                            day_high_tbq=None,
+                            day_low_tbq=None,
+                            day_high_tsq=None,
+                            day_low_tsq=None
+                        )
+                        self.live_data_update.emit(data)
+                else:
+                    print(f"WARNING: QuotationFetcherWorker - No live quote data found for {self.symbol} in response or invalid response structure. Quote data: {quote_data}")
+
+            except Exception as e:
+                error_msg = f"Error fetching live quote for {self.symbol}: {traceback.format_exc()}"
+                self.error_occurred.emit(error_msg)
+            
+            time.sleep(self.refresh_interval)
+        if self.db_manager:
+            self.db_manager.close()
+        self.finished.emit()
 class DraggableTableWidget(QTableWidget):
     enterPressed = pyqtSignal()
 
@@ -60,6 +176,7 @@ class VolumeLoggerWorker(QObject):
         except Exception as e:
             self.error.emit(str(e))
 class MainWindow(QMainWindow):
+    init_success = pyqtSignal()
     def __init__(self):
         super().__init__()
         self.db_manager = DatabaseManager()
@@ -86,22 +203,19 @@ class MainWindow(QMainWindow):
 
         self.end_of_day_timer = QTimer(self)
         self.end_of_day_timer.setSingleShot(True)
-        self.end_of_day_timer.timeout.connect(self._delete_access_token_and_reschedule)
-        self.splash = SplashScreen(self)
-        # self.splash.show()
+        self.logger_threads = []
         QApplication.processEvents()
 
         self.init_ui()
         self.load_settings()
-        self._initialize_app_components()
+        self._initialize_kite_from_db_settings()
 
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self.update_status_bar)
         self.status_timer.start(1000)
 
-
     def init_ui(self):
-        self.setWindowTitle("VtQube v1.0.0")
+        self.setWindowTitle("VtQube v1.0.3")
         screen_rect = QApplication.desktop().availableGeometry(self)
         self.setGeometry(screen_rect)
         self.showMaximized()
@@ -115,6 +229,19 @@ class MainWindow(QMainWindow):
 
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget)
+
+        self.spinner = WaitingSpinner(
+                            self,
+                            roundness=100.0,
+                            fade=80.0,
+                            radius=30,
+                            lines=29,
+                            line_length=15,
+                            line_width=8,
+                            speed=1.5707963267948966,
+                            color=QColor(0, 0, 255)
+                        )
+        self.spinner.start()
 
         self.tab_widget.addTab(self.config_widget, "Configuration")
         self.config_widget.api_keys_saved.connect(self.on_api_keys_saved)
@@ -205,14 +332,21 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.logs_widget, "Logs")
         self.logs_widget.log_row_double_clicked.connect(self.open_trading_dialog_from_log)
 
-        self.quotation_widget = QuotationWidget(
-            self.db_manager,
-            self.stock_manager,
-            self.futures_manager,
-            self.options_manager
-        )
-        self.tab_widget.addTab(self.quotation_widget, "Quotations")
-        self.quotation_widget.open_trading_dialog.connect(self.open_trading_dialog)
+        self.trading_widget = TradingWidget(
+                                self.db_manager,
+                                self.stock_manager,
+                                self.futures_manager,
+                                self.options_manager,
+                                self.kite
+                            )
+        self.tab_widget.addTab(self.trading_widget, "Trading")
+        self.trading_widget.request_live_data_for_symbol.connect(self._start_specific_symbol_quotation_fetch)
+        self.trading_widget.stop_live_data_for_symbol.connect(self._stop_specific_symbol_quotation_fetch)
+        self.trading_widget.open_trading_dialog.connect(self.open_trading_dialog)
+        self.init_success.connect(self._on_kite_init_success)
+
+        self.quotation_fetcher_thread: Optional[QThread] = None
+        self.quotation_fetcher_worker: Optional[QuotationFetcherWorker] = None
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -233,13 +367,6 @@ class MainWindow(QMainWindow):
             card = create_stat_card(title, value, color)
             self.stat_cards_layout.addWidget(card)
             self.stat_cards[title.lower().replace(' ', '_').replace('%', '')] = card
-    
-    def _initialize_app_components(self):
-        # if self.splash:
-        #     self.splash.update_status("Initializing KiteConnect and fetching instruments...")
-        #     QApplication.processEvents()
-
-        self._initialize_kite_from_db_settings()
 
     def update_stat_card(self, title: str, value: str):
         key = title.lower().replace(' ', '_').replace('%', '')
@@ -251,6 +378,64 @@ class MainWindow(QMainWindow):
                 pass
         else:
             pass
+    
+    def _on_kite_init_success(self):
+        self.trading_widget.kite = self.kite
+        self.trading_widget.load_all_tradable_instruments()
+        self.trading_widget.fetch_and_display_account_info()
+    
+    def _start_specific_symbol_quotation_fetch(self, symbol: str):
+        self._stop_specific_symbol_quotation_fetch()
+
+        if not self.kite:
+            QMessageBox.warning(self, "KiteConnect Error", "KiteConnect is not initialized. Cannot fetch live quotes.")
+            return
+
+        instrument_details = (
+            self.stock_manager.get_tradable_instrument_details(symbol) or
+            self.futures_manager.get_tradable_instrument_details(symbol) or
+            self.options_manager.get_tradable_instrument_details(symbol)
+        )
+        if not instrument_details:
+            QMessageBox.warning(self, "Instrument Not Found", f"Could not find details for instrument: {symbol}. Cannot fetch live quotes.")
+            return
+        
+        _symbol, _inst_type, _exchange, _token, _expiry, _strike = instrument_details
+        self.quotation_fetcher_thread = QThread()
+        self.quotation_fetcher_worker = QuotationFetcherWorker(self.kite, self.db_manager.db_path)
+        
+        self.quotation_fetcher_worker.set_instrument_details(
+            symbol=_symbol,
+            instrument_token=_token,
+            instrument_type=_inst_type,
+            exchange=_exchange,
+            expiry_date=_expiry,
+            strike_price=_strike
+        )
+        self.quotation_fetcher_worker.moveToThread(self.quotation_fetcher_thread)
+        self.quotation_fetcher_thread.started.connect(self.quotation_fetcher_worker.run)
+        self.quotation_fetcher_worker.live_data_update.connect(self.trading_widget.update_quotation_data)
+        self.quotation_fetcher_worker.error_occurred.connect(lambda msg: QMessageBox.critical(self, "Live Data Error (Trading)", msg))
+        
+        self.quotation_fetcher_worker.finished.connect(self.quotation_fetcher_thread.quit)
+        self.quotation_fetcher_worker.finished.connect(self.quotation_fetcher_worker.deleteLater)
+        self.quotation_fetcher_thread.finished.connect(self.quotation_fetcher_thread.deleteLater)
+
+        self.quotation_fetcher_thread.start()
+
+    def _stop_specific_symbol_quotation_fetch(self, symbol: str = None):
+        if self.quotation_fetcher_worker and self.quotation_fetcher_thread and self.quotation_fetcher_thread.isRunning():
+            if symbol is None or self.quotation_fetcher_worker.symbol == symbol:
+                self.quotation_fetcher_worker.stop()
+                self.quotation_fetcher_thread.quit()
+                if not self.quotation_fetcher_thread.wait(5000):
+                    print(f"WARNING: Quotation fetcher thread for {self.quotation_fetcher_worker.symbol} did not terminate gracefully within timeout.")
+                
+                # Clear references only after attempting to terminate the thread
+                self.quotation_fetcher_thread = None
+                self.quotation_fetcher_worker = None
+            else:
+                print(f"DEBUG: MainWindow - Not stopping quotation fetcher for {self.quotation_fetcher_worker.symbol} as requested symbol was {symbol}.")
 
     def update_monitoring_stat_cards(self):
         total_monitored = len(self.current_live_data)
@@ -334,13 +519,11 @@ class MainWindow(QMainWindow):
             self.config.access_token = access_token
             self.fetch_all_tradable_instruments()
             self.start_monitor_btn.setEnabled(True)
-            self.quotation_widget.populate_table()
             self._populate_completer_with_all_tradable_symbols()
             self._schedule_access_token_deletion()
         else:
             QMessageBox.critical(self, "Login Error", "KiteConnect instance not initialized. Please ensure API keys are saved.")
             self.start_monitor_btn.setEnabled(False)
-
 
     def _populate_completer_with_all_tradable_symbols(self):
         all_symbols = set()
@@ -404,10 +587,6 @@ class MainWindow(QMainWindow):
         api_key = self.db_manager.get_setting("api_key")
         api_secret = self.db_manager.get_setting("api_secret")
         access_token = self.db_manager.get_setting("access_token")
-        last_fetch_date = datetime.datetime.strptime(self.db_manager.get_setting("last_instrument_fetch_date"), "%Y-%m-%d %H:%M:%S.%f")
-        if (last_fetch_date.date() < datetime.datetime.today().date()):
-            QMessageBox.critical(self, "Access Token Error", "Kindly Fetch Access Token Again!")
-            return
 
         if api_key and api_secret:
             try:
@@ -416,18 +595,18 @@ class MainWindow(QMainWindow):
                     self.kite.set_access_token(access_token)
                     self.config.access_token = access_token
                     self.start_monitor_btn.setEnabled(True)
-                    self.fetch_all_tradable_instruments()
-                    self._populate_completer_with_all_tradable_symbols()
-                    self._schedule_access_token_deletion()
-                QMessageBox.information(self, "Kite Initialized", "Kite Initialization was successful")
-            except ImportError:
-                QMessageBox.critical(self, "Error", "KiteConnect library not found. Please install it (`pip install kiteconnect`).")
-                self.kite = None
-                return
+                    QTimer.singleShot(100, self._safe_fetch)
+                self.init_success.emit()
             except Exception as e:
                 self.kite = None
                 QMessageBox.critical(self, "KiteConnect Error", f"Failed to initialize KiteConnect from saved settings (possibly expired token): {e}\nPlease click 'Fetch Access Token' to re-login.")
                 self.start_monitor_btn.setEnabled(False)
+
+    def _safe_fetch(self):
+        if self.kite:
+            self.fetch_all_tradable_instruments()
+            self._populate_completer_with_all_tradable_symbols()
+            self._schedule_access_token_deletion()
 
     def fetch_all_tradable_instruments(self):
         if not self.kite:
@@ -455,8 +634,6 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Fetching tradable instruments...")
 
     def on_all_fetches_complete(self):
-        QMessageBox.information(self, "Fetch Complete", "All tradable instruments fetched and saved.")
-
         self.db_manager.reopen_connection()
         self.stock_manager.load_all_tradable_instruments_from_db()
         self.futures_manager.load_all_tradable_instruments_from_db()
@@ -466,8 +643,8 @@ class MainWindow(QMainWindow):
         self.futures_selection_widget.populate_all_symbols()
         self.options_selection_widget.populate_all_symbols()
         self._populate_completer_with_all_tradable_symbols()
-
-        self.quotation_widget.populate_table()
+        self.spinner.stop()
+        QMessageBox.information(self, "Fetch Complete", "All tradable instruments fetched and saved.")
 
     def _delete_access_token_and_reschedule(self):
         self.db_manager.remove_setting("access_token")
@@ -513,8 +690,10 @@ class MainWindow(QMainWindow):
             return
 
         if self.monitoring_thread and self.monitoring_thread.isRunning():
-            QMessageBox.information(self, "Monitoring", "Monitoring is already running.")
-            return
+            QMessageBox.information(self, "Monitoring", "Stopping previous monitoring session...")
+            self.stop_monitoring()
+            
+            QApplication.processEvents()
 
         self.config.load_settings_from_db(self.db_manager)
 
@@ -543,19 +722,34 @@ class MainWindow(QMainWindow):
             options_manager=self.options_manager
         )
         self.monitoring_thread.set_monitored_symbols(monitored_symbols_for_thread)
-        self.monitoring_thread.volume_update.connect(self.update_live_data_table)
-        self.monitoring_thread.alert_triggered.connect(self.on_alert_triggered)
-        self.monitoring_thread.status_changed.connect(self.status_label.setText)
-        self.monitoring_thread.error_occurred.connect(lambda msg: QMessageBox.critical(self, "Monitoring Error", msg))
+        
+        self.monitoring_thread.volume_update.connect(
+            self.update_live_data_table, 
+            Qt.QueuedConnection
+        )
+        self.monitoring_thread.alert_triggered.connect(
+            self.on_alert_triggered,
+            Qt.QueuedConnection
+        )
+        self.monitoring_thread.status_changed.connect(
+            self.status_label.setText,
+            Qt.DirectConnection
+        )
+        self.monitoring_thread.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Monitoring Error", msg),
+            Qt.DirectConnection
+        )
+        self.monitoring_thread.finished.connect(
+            self.on_monitoring_thread_finished,
+            Qt.DirectConnection
+        )
         
         self.monitoring_thread.start()
-
+        
         self.start_monitor_btn.setEnabled(False)
         self.toggle_pause_resume_btn.setEnabled(True)
-        self.toggle_pause_resume_btn.setText("Pause Monitoring")
-        self.toggle_pause_resume_btn.setStyleSheet("background-color: #f0ad4e;")
         self.stop_monitor_btn.setEnabled(True)
-        self.status_label.setText("Status: Running")
+        self.status_label.setText("Status: Starting...")
 
     def toggle_monitoring_state(self):
         if self.monitoring_thread and self.monitoring_thread.isRunning():
@@ -569,22 +763,35 @@ class MainWindow(QMainWindow):
                 self.toggle_pause_resume_btn.setText("Resume Monitoring")
                 self.toggle_pause_resume_btn.setStyleSheet("background-color: #5bc0de;")
                 self.status_label.setText("Status: Paused")
-
     def stop_monitoring(self):
-        if self.monitoring_thread and self.monitoring_thread.isRunning():
-            self.monitoring_thread.stop_monitoring()
+        if self.monitoring_thread:
+            try:
+                self.monitoring_thread.volume_update.disconnect()
+                self.monitoring_thread.alert_triggered.disconnect()
+                self.monitoring_thread.status_changed.disconnect()
+                self.monitoring_thread.error_occurred.disconnect()
+            except:
+                pass
+            
             self.monitoring_thread.wait()
+            self.monitoring_thread.deleteLater()
             self.monitoring_thread = None
-
+            
+            self._update_ui_after_stop()
+    
+    def _update_ui_after_stop(self):
         self.start_monitor_btn.setEnabled(True)
         self.toggle_pause_resume_btn.setEnabled(False)
-        self.toggle_pause_resume_btn.setText("Pause Monitoring")
-        self.toggle_pause_resume_btn.setStyleSheet("")
         self.stop_monitor_btn.setEnabled(False)
         self.status_label.setText("Status: Stopped")
+        
         self.live_data_table.setRowCount(0)
         self.current_live_data.clear()
         self.update_monitoring_stat_cards()
+
+    def on_monitoring_thread_finished(self):
+        print("Monitoring thread finished naturally")
+        self._update_ui_after_stop()
 
     def update_live_data_table(self, data: VolumeData):
         row_idx = -1
@@ -598,7 +805,6 @@ class MainWindow(QMainWindow):
             self.live_data_table.insertRow(row_idx)
 
         self.current_live_data[data.symbol] = data
-
         self.live_data_table.setItem(row_idx, 0, QTableWidgetItem(data.timestamp.split(' ')[1]))
         self.live_data_table.setItem(row_idx, 1, QTableWidgetItem(data.symbol))
         self.live_data_table.setItem(row_idx, 2, QTableWidgetItem(data.instrument_type if data.instrument_type else "N/A"))
@@ -645,17 +851,19 @@ class MainWindow(QMainWindow):
         remark_item = QTableWidgetItem(remark_text)
         remark_item.setBackground(remark_color)
         self.live_data_table.setItem(row_idx, 7, remark_item)
-
-        if self.tab_widget.currentWidget() == self.quotation_widget:
-            self.quotation_widget.update_quotation_data(data)
         
         thread = QThread()
         worker = VolumeLoggerWorker(self.db_manager.db_path, data, remark_text)
         worker.moveToThread(thread)
+
         thread.started.connect(worker.run)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
+
+        self.logger_threads.append(thread)
+        thread.finished.connect(lambda: self.logger_threads.remove(thread))
+
         worker.error.connect(lambda e: print(f"Volume logging error: {e}"))
         thread.start()
         self.logs_widget.refresh_logs()
@@ -787,20 +995,25 @@ class MainWindow(QMainWindow):
 
             if reply == QMessageBox.Yes:
                 self.stop_monitoring()
+                QApplication.processEvents()
+                
                 event.accept()
             else:
                 event.ignore()
         else:
             event.accept()
-
+        
+        self._stop_specific_symbol_quotation_fetch()
+        self.trading_widget.stop_account_info_timer()
+    
     def close_application(self):
         self.close()
 
 def main():
     app = QApplication(sys.argv)
 
-    app.setApplicationName("VtQube-v1.0.2-beta")
-    app.setApplicationVersion("1.0.2")
+    app.setApplicationName("VtQube-v1.0.3-beta")
+    app.setApplicationVersion("1.0.3")
     app.setOrganizationName("Trading Solutions")
 
     app.setStyle('Fusion')

@@ -49,7 +49,6 @@ class DatabaseManager:
         self._add_column_if_not_exists(cursor, "settings", "trade_on_tbq_tsq_alert", "TEXT DEFAULT 'True'")
         self._add_column_if_not_exists(cursor, "settings", "budget_cap", "REAL DEFAULT 0.0")
         self._add_column_if_not_exists(cursor, "settings", "trade_ltp_percentage", "REAL DEFAULT 0.0")
-        self._add_column_if_not_exists(cursor, "settings", "last_instrument_fetch_date", "TEXT")
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tradable_instruments (
@@ -214,7 +213,7 @@ class DatabaseManager:
         if symbol:
             query += " AND symbol = ?"
             params.append(symbol)
-        
+        print("13")        
         if tbq_change_filter:
             filter_type, value = tbq_change_filter
             if filter_type == 'greater_than':
@@ -235,7 +234,7 @@ class DatabaseManager:
 
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
-
+        print("14")
         cursor.execute(query, params)
         return cursor.fetchall()
 
@@ -347,7 +346,7 @@ class DatabaseManager:
         query += " ORDER BY tradingsymbol"
         
         cursor.execute(query, params)
-        instruments = cursor.fetchall()
+        instruments = [row for row in cursor.fetchall()]
         return instruments
 
     def bulk_save_tradable_instruments(self, instruments_data: List[Tuple[str, str, str, int, Optional[str], Optional[float]]]):

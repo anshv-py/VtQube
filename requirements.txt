@@ -2,6 +2,6 @@ pandas
 PyQt5
 python-dotenv
 kiteconnect
-twilio
+simpleaudio
 openpyxl
 sip

@@ -22,7 +22,6 @@ class LogRefreshWorker(QObject):
 
     def run(self):
         try:
-            print("logs run")
             self.db_manager = DatabaseManager(self.db_path)
             all_logs = []
             all_volume_data = self.db_manager.get_volume_logs()
@@ -71,6 +70,9 @@ class LogsWidget(QWidget):
         self.db_manager = db_manager
         self.alerts_cache: List[Dict[str, Any]] = []
         self.seen_initial_log_for_symbol_date = set()
+        self.current_page = 0
+        self.logs_per_page = 50
+        self.filtered_logs = []
         self.init_ui()
         self.log_thread = None
         self.log_worker = None
@@ -173,6 +175,19 @@ class LogsWidget(QWidget):
         self.clear_button.clicked.connect(self.clear_logs)
         button_layout.addWidget(self.clear_button)
 
+        self.prev_button = QPushButton("◀")
+        self.next_button = QPushButton("▶")
+        self.prev_button.setFixedWidth(40)
+        self.next_button.setFixedWidth(40)
+        self.page_label = QLabel("Page 1")
+
+        self.prev_button.clicked.connect(self.prev_page)
+        self.next_button.clicked.connect(self.next_page)
+
+        button_layout.addWidget(self.prev_button)
+        button_layout.addWidget(self.page_label)
+        button_layout.addWidget(self.next_button)
+
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
 
@@ -182,8 +197,6 @@ class LogsWidget(QWidget):
         self.symbol_filter_combo.blockSignals(True)
         self.symbol_filter_combo.clear()
         self.symbol_filter_combo.addItem("All Symbols")
-
-        print("I CAME HERE 11")
 
         unique_symbols = sorted(list(set(log['symbol'] for log in self.alerts_cache if log.get('symbol'))))
         self.symbol_filter_combo.addItems(unique_symbols)
@@ -206,7 +219,24 @@ class LogsWidget(QWidget):
             if symbol_match and type_match and date_match:
                 filtered_logs.append(log_entry)
         
-        self._populate_table(filtered_logs)
+        self.filtered_logs = filtered_logs
+        self.current_page = 0
+        self._populate_table(self.filtered_logs)
+        self.update_page_label()
+    
+    def update_page_label(self):
+        total_pages = max(1, (len(self.filtered_logs) + self.logs_per_page - 1) // self.logs_per_page)
+        self.page_label.setText(f"Page {self.current_page + 1} of {total_pages}")
+
+    def next_page(self):
+        if (self.current_page + 1) * self.logs_per_page < len(self.filtered_logs):
+            self.current_page += 1
+            self._populate_table(self.filtered_logs)
+
+    def prev_page(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self._populate_table(self.filtered_logs)
 
     def _populate_table(self, logs_to_display: List[Dict[str, Any]]):
         self.log_table.clearContents()
@@ -228,7 +258,11 @@ class LogsWidget(QWidget):
         
         self.seen_initial_log_for_symbol_date.clear() # This isn't strictly needed as 'is_initial_log' is pre-tagged
 
-        for row_idx, log_entry in enumerate(logs_to_display):
+        start_idx = self.current_page * self.logs_per_page
+        end_idx = start_idx + self.logs_per_page
+        paginated_logs = logs_to_display[start_idx:end_idx]
+
+        for row_idx, log_entry in enumerate(paginated_logs):
             self.log_table.insertRow(row_idx)
 
             row_bg_color = QColor(240, 240, 240) if row_idx % 2 == 0 else QColor(255, 255, 255) # Light grey and white
@@ -284,7 +318,8 @@ class LogsWidget(QWidget):
                 item = QTableWidgetItem(item_text)
                 item.setBackground(bg_brush)
                 self.log_table.setItem(row_idx, col_idx, item)
-
+            
+        self.update_page_label()
         self.log_table.resizeRowsToContents()
 
     def cleanup_thread(self):

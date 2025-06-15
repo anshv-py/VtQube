@@ -3,12 +3,13 @@ from kiteconnect import KiteConnect
 from typing import List, Any
 import pandas as pd
 import traceback
+from stock_management import InstrumentManager
 
 class InstrumentLoadThread(QThread):
     data_ready = pyqtSignal(list)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, manager):
+    def __init__(self, manager: InstrumentManager):
         super().__init__()
         self.manager = manager
 
@@ -24,7 +25,7 @@ class InstrumentFetchThread(QThread):
     error_occurred = pyqtSignal(str)
     all_fetches_complete = pyqtSignal()
 
-    def __init__(self, instrument_managers: List[Any], db_path: str, api_key: str, access_token: str):
+    def __init__(self, instrument_managers: List[InstrumentManager], db_path: str, api_key: str, access_token: str):
         super().__init__()
         self.instrument_managers = instrument_managers
         self.db_path = db_path
@@ -47,7 +48,6 @@ class InstrumentFetchThread(QThread):
 
             for manager in self.instrument_managers:
                 manager.set_kite_instance(self.kite)
-
                 manager.fetch_all_tradable_instruments(raw_instruments_df=df)
                 pass
 

@@ -1,14 +1,16 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QSpinBox, QTimeEdit, QMessageBox, QDoubleSpinBox, QCheckBox,
-    QGroupBox, QComboBox, QApplication, QProgressBar
+    QGroupBox, QComboBox, QApplication
 )
 from PyQt5.QtCore import QTime, pyqtSignal, Qt
-from dataclasses import dataclass, field
+from PyQt5.QtGui import QColor
+from dataclasses import dataclass
 from typing import Optional
 import datetime
 import webbrowser
 
+from pyqtspinner import WaitingSpinner
 from database import DatabaseManager
 from utils import RequestTokenServer
 
@@ -137,7 +139,17 @@ class ConfigWidget(QWidget):
                 background-color: #0056b3;
             }}
         """)
-
+        self.spinner = WaitingSpinner(
+                            self,
+                            roundness=100.0,
+                            fade=80.0,
+                            radius=30,
+                            lines=29,
+                            line_length=15,
+                            line_width=8,
+                            speed=1.5707963267948966,
+                            color=QColor(0, 0, 255)
+                        )
         api_group = QGroupBox("KiteConnect API Settings")
         api_layout = QGridLayout()
 
@@ -360,6 +372,7 @@ class ConfigWidget(QWidget):
         )
 
     def fetch_access_token(self):
+        self.spinner.start()
         api_key = self.api_key_input.text()
         api_secret = self.api_secret_input.text()
 
@@ -394,6 +407,7 @@ class ConfigWidget(QWidget):
         self.db_manager.save_setting("access_token", access_token)
         self.db_manager.save_setting("last_instrument_fetch_date", str(datetime.datetime.now()))
         self.token_fetch_success.emit("Access Token fetched and saved successfully!")
+        self.spinner.stop()
         self.login_success.emit(access_token)
 
     def _on_server_error(self, error_message: str):

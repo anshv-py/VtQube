@@ -85,14 +85,14 @@ class TradingDialog(QDialog):
         form_layout.addWidget(QLabel("Product Type:"), row_idx, 0)
         self.product_type_combo = QComboBox()
         self.product_type_combo.addItems(["MIS", "CNC", "NRML"])
-        self.product_type_combo.setCurrentText("MIS")
+        self.product_type_combo.setCurrentText("NRML")
         form_layout.addWidget(self.product_type_combo, row_idx, 1)
         row_idx += 1
 
         form_layout.addWidget(QLabel("Order Type:"), row_idx, 0)
         self.order_type_combo = QComboBox()
         self.order_type_combo.addItems(["MARKET", "LIMIT", "SL", "SL-M"])
-        self.order_type_combo.setCurrentText("MARKET")
+        self.order_type_combo.setCurrentText("LIMIT")
         self.order_type_combo.currentIndexChanged.connect(self._toggle_price_and_trigger_fields)
         form_layout.addWidget(self.order_type_combo, row_idx, 1)
         row_idx += 1
@@ -168,8 +168,9 @@ class TradingDialog(QDialog):
         initial_price = float(self.initial_data.get("price", 0.0))
         self.price_spinbox.setValue(initial_price)
 
-        if self.budget_cap > 0 and initial_price > 0:
-            calculated_quantity = int(self.budget_cap / initial_price)
+
+        if self.initial_data.get("quantity"):
+            calculated_quantity = self.initial_data.get("quantity")
             if calculated_quantity == 0:
                 calculated_quantity = 1
             self.quantity_spinbox.setValue(calculated_quantity)
@@ -248,7 +249,7 @@ class TradingDialog(QDialog):
                 price=price if order_type == "LIMIT" else None,
                 trigger_price=trigger_price,
             )
-            order_id = order_response.get('order_id')
+            order_id = order_response
             status = "PLACED"
             message = f"Order successfully placed with ID: {order_id}"
             QMessageBox.information(self, "Order Placed", message)

@@ -248,21 +248,6 @@ class DatabaseManager:
             (today_start, today_end)
         )
         return cursor.fetchone()[0]
-
-    def log_alert(self, timestamp: str, symbol: str, message: str, alert_type: str, volume_log_id: Optional[int] = None):
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO alerts (timestamp, symbol, message, alert_type, volume_log_id)
-            VALUES (?, ?, ?, ?, ?)
-        """, (timestamp, symbol, message, alert_type, volume_log_id))
-        conn.commit()
-
-    def get_all_alerts(self) -> List[Tuple]:
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, timestamp, symbol, message, alert_type, volume_log_id FROM alerts ORDER BY timestamp DESC")
-        return cursor.fetchall()
     
     def log_trade(self, timestamp: str, symbol: str, instrument_type: str, transaction_type: str,
                   quantity: int, price: float, order_type: str, product_type: str,
@@ -328,13 +313,13 @@ class DatabaseManager:
                 params.append('NIFTY%')
             elif option_category == 'BANK':
                 query += " AND tradingsymbol LIKE ?"
-                params.append('BANKNIFTY%')
+                params.append('BANK%')
             elif option_category == 'FIN':
                 query += " AND tradingsymbol LIKE ?"
-                params.append('FINNIFTY%')
+                params.append('FIN%')
             elif option_category == 'MIDCP':
                 query += " AND tradingsymbol LIKE ?"
-                params.append('MIDCPNIFTY%')
+                params.append('MIDCP%')
             elif option_category == 'STOCK':
                 query += """ 
                     AND tradingsymbol NOT LIKE ? 
@@ -342,7 +327,7 @@ class DatabaseManager:
                     AND tradingsymbol NOT LIKE ? 
                     AND tradingsymbol NOT LIKE ?
                 """
-                params.extend(['NIFTY%', 'BANKNIFTY%', 'FINNIFTY%', 'MIDCPNIFTY%'])
+                params.extend(['NIFTY%', 'BANK%', 'FIN%', 'MIDCP%'])
         query += " ORDER BY tradingsymbol"
         
         cursor.execute(query, params)

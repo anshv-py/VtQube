@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QGroupBox, QTableWidget, QTableWidgetItem, QCompleter,
     QAbstractItemView
 )
+import simpleaudio as sa
 from pyqtspinner import WaitingSpinner
 from PyQt5.QtCore import QTimer, Qt, QStringListModel, QThread, QObject, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon, QKeyEvent
@@ -25,47 +26,39 @@ from kiteconnect import KiteConnect
 import traceback
 
 class QuotationFetcherWorker(QObject):
-    """
-    A worker thread for fetching live quotation data for a SINGLE specified instrument
-    from KiteConnect API and emitting it to the UI.
-    """
     live_data_update = pyqtSignal(VolumeData)
     error_occurred = pyqtSignal(str)
-    finished = pyqtSignal() # Signal to indicate worker has stopped
+    finished = pyqtSignal()
 
     def __init__(self, kite: KiteConnect, db_path: str):
         super().__init__()
         self.kite = kite
         self.db_path = db_path
-        self.symbol: Optional[str] = None # The trading symbol (e.g., RELIANCE)
+        self.symbol: Optional[str] = None
         self.instrument_token: Optional[int] = None
-        self.instrument_type: Optional[str] = None # EQ, FUT, CE, PE
-        self.exchange: Optional[str] = None # NSE, NFO etc.
+        self.instrument_type: Optional[str] = None
+        self.exchange: Optional[str] = None
         self.expiry_date: Optional[str] = None
         self.strike_price: Optional[float] = None
-        self._running = False # Control flag for the run loop
-        self.refresh_interval = 2 # seconds, for live quotes fetch
-        self.db_manager: Optional[DatabaseManager] = None # To be initialized in run()
+        self._running = False
+        self.refresh_interval = 2
+        self.db_manager: Optional[DatabaseManager] = None
 
     def set_instrument_details(self, symbol: str, instrument_token: int, instrument_type: str, exchange: str, expiry_date: Optional[str], strike_price: Optional[float]):
-        """Sets the details of the instrument to fetch quotes for."""
         self.symbol = symbol
         self.instrument_token = instrument_token
         self.instrument_type = instrument_type
         self.exchange = exchange
         self.expiry_date = expiry_date
         self.strike_price = strike_price
-        self._running = True # Set running flag to True when details are set
+        self._running = True
         print(f"DEBUG: QuotationFetcherWorker - Set instrument details: {symbol}, {instrument_type}, {exchange}, {instrument_token}")
 
 
     def stop(self):
-        """Stops the quotation fetching loop gracefully."""
         self._running = False
 
     def run(self):
-        """Main loop for fetching live data for the single instrument."""
-        # Initialize DBManager here in the thread's context
         self.db_manager = DatabaseManager(self.db_path)
 
         if not self.kite:
@@ -78,18 +71,12 @@ class QuotationFetcherWorker(QObject):
             self.finished.emit()
             return
 
-        # Construct the full trading symbol key (e.g., "NSE:RELIANCE", "NFO:NIFTY24AUGFUT")
         full_symbol_key = f"{self.exchange}:{self.symbol}"
-        print(f"DEBUG: QuotationFetcherWorker - Starting live fetch for: {full_symbol_key}")
-
         while self._running:
             try:
-                # kite.quote takes a list of trading symbol strings
                 quote_data = self.kite.quote([full_symbol_key])
-                # print(f"DEBUG: QuotationFetcherWorker - Raw quote data for {full_symbol_key}: {quote_data}")
-
                 if quote_data and full_symbol_key in quote_data:
-                    tick = quote_data[full_symbol_key] # Use 'tick' as in previous logic
+                    tick = quote_data[full_symbol_key]
                     current_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                     last_price = tick.get('last_price')
@@ -97,14 +84,10 @@ class QuotationFetcherWorker(QObject):
 
                     if last_price is None:
                         print(f"WARNING: No last_price for {self.symbol}. Skipping update for this tick.")
-                        # Do not continue and sleep here, let the main sleep handle it
                     else:
                         buy_quantity = tick.get('buy_quantity', 0)
                         sell_quantity = tick.get('sell_quantity', 0)
-
                         ratio = buy_quantity / sell_quantity if sell_quantity else (buy_quantity / 0.0001 if buy_quantity else 0)
-
-                        # Create VolumeData object with available details
                         data = VolumeData(
                             timestamp=current_timestamp,
                             symbol=self.symbol,
@@ -138,6 +121,7 @@ class QuotationFetcherWorker(QObject):
         if self.db_manager:
             self.db_manager.close()
         self.finished.emit()
+
 class DraggableTableWidget(QTableWidget):
     enterPressed = pyqtSignal()
 
@@ -148,14 +132,37 @@ class DraggableTableWidget(QTableWidget):
         self.setDropIndicatorShown(True)
         self.setDragDropMode(QAbstractItemView.InternalMove)
         self.viewport().setAcceptDrops(True)
-
+        self.setSelectionBehavior(QAbstractItemView.SelectRows)
 
     def keyPressEvent(self, event: QKeyEvent):
-        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             self.enterPressed.emit()
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def dropEvent(self, event):
+        source_row = self.currentRow()
+        pos = event.pos()
+        target_row = self.rowAt(pos.y())
+
+        if target_row == -1 or source_row == -1 or source_row == target_row:
+            return super().dropEvent(event)
+
+        row_data = [self.item(source_row, col).clone() if self.item(source_row, col) else QTableWidgetItem()
+                    for col in range(self.columnCount())]
+
+        self.insertRow(target_row)
+
+        for col, item in enumerate(row_data):
+            self.setItem(target_row, col, item)
+        
+        if source_row > target_row:
+            self.removeRow(source_row + 1)
+        else:
+            self.removeRow(source_row)
+
+        event.accept()
 
 class VolumeLoggerWorker(QObject):
     finished = pyqtSignal()
@@ -241,7 +248,6 @@ class MainWindow(QMainWindow):
                             speed=1.5707963267948966,
                             color=QColor(0, 0, 255)
                         )
-        self.spinner.start()
 
         self.tab_widget.addTab(self.config_widget, "Configuration")
         self.config_widget.api_keys_saved.connect(self.on_api_keys_saved)
@@ -431,7 +437,6 @@ class MainWindow(QMainWindow):
                 if not self.quotation_fetcher_thread.wait(5000):
                     print(f"WARNING: Quotation fetcher thread for {self.quotation_fetcher_worker.symbol} did not terminate gracefully within timeout.")
                 
-                # Clear references only after attempting to terminate the thread
                 self.quotation_fetcher_thread = None
                 self.quotation_fetcher_worker = None
             else:
@@ -473,7 +478,7 @@ class MainWindow(QMainWindow):
     def apply_display_order_to_monitoring(self):
         new_monitored_order = []
         for row in range(self.live_data_table.rowCount()):
-            symbol_item = self.live_data_table.item(row, 1) # Symbol is in column 1 (index 1)
+            symbol_item = self.live_data_table.item(row, 1)
             if symbol_item:
                 new_monitored_order.append(symbol_item.text())
 
@@ -512,6 +517,7 @@ class MainWindow(QMainWindow):
             self.start_monitor_btn.setEnabled(False)
 
     def on_login_success(self, access_token: str):
+        self.spinner.start()
         if self.kite:
             self.kite.set_access_token(access_token)
             QMessageBox.information(self, "Login Success", "KiteConnect login successful!")
@@ -607,6 +613,7 @@ class MainWindow(QMainWindow):
             self.fetch_all_tradable_instruments()
             self._populate_completer_with_all_tradable_symbols()
             self._schedule_access_token_deletion()
+        self.spinner.stop()
 
     def fetch_all_tradable_instruments(self):
         if not self.kite:
@@ -663,7 +670,7 @@ class MainWindow(QMainWindow):
         self.end_of_day_timer.stop()
         end_time_config = self.config.end_time
         if end_time_config is None:
-            QMessageBox.warning(self, "End time not configured in settings. Cannot schedule access token deletion.")
+            QMessageBox.warning(self, "Save Settings Failed!", "End time not configured in settings. Cannot schedule access token deletion.")
             return
 
         now = datetime.datetime.now()
@@ -763,6 +770,7 @@ class MainWindow(QMainWindow):
                 self.toggle_pause_resume_btn.setText("Resume Monitoring")
                 self.toggle_pause_resume_btn.setStyleSheet("background-color: #5bc0de;")
                 self.status_label.setText("Status: Paused")
+
     def stop_monitoring(self):
         if self.monitoring_thread:
             try:
@@ -770,13 +778,12 @@ class MainWindow(QMainWindow):
                 self.monitoring_thread.alert_triggered.disconnect()
                 self.monitoring_thread.status_changed.disconnect()
                 self.monitoring_thread.error_occurred.disconnect()
+
+                self.monitoring_thread.wait(100)
+                self.monitoring_thread.deleteLater()
+                self.monitoring_thread = None
             except:
                 pass
-            
-            self.monitoring_thread.wait()
-            self.monitoring_thread.deleteLater()
-            self.monitoring_thread = None
-            
             self._update_ui_after_stop()
     
     def _update_ui_after_stop(self):
@@ -877,6 +884,9 @@ class MainWindow(QMainWindow):
         telegram_bot_token = self.db_manager.get_setting("telegram_bot_token")
         telegram_chat_id = self.db_manager.get_setting("telegram_chat_id")
 
+        wave_obj = sa.WaveObject.from_wave_file("alert.wav")
+        wave_obj.play()
+
         if telegram_enabled and telegram_bot_token and telegram_chat_id:
             try:
                 message_parts = []
@@ -904,15 +914,15 @@ class MainWindow(QMainWindow):
                 if is_tbq_alert:
                     if data.day_high_tbq is not None:
                         tbq_info.append(f"TBQ Day High: {data.day_high_tbq:,}")
-                    if data.day_low_tbq is not None: # Though usually only high is relevant for spike alerts
-                        if "spike" not in primary_alert_type.lower(): # Only show low if not a spike alert
+                    if data.day_low_tbq is not None:
+                        if "spike" not in primary_alert_type.lower():
                             tbq_info.append(f"TBQ Day Low: {data.day_low_tbq:,}")
 
                 if is_tsq_alert:
                     if data.day_high_tsq is not None:
                         tsq_info.append(f"TSQ Day High: {data.day_high_tsq:,}")
-                    if data.day_low_tsq is not None: # Though usually only high is relevant for spike alerts
-                        if "spike" not in primary_alert_type.lower(): # Only show low if not a spike alert
+                    if data.day_low_tsq is not None:
+                        if "spike" not in primary_alert_type.lower():
                             tsq_info.append(f"TSQ Day Low: {data.day_low_tsq:,}")
                 
                 tbq_tsq_line = []
@@ -922,7 +932,7 @@ class MainWindow(QMainWindow):
                     tbq_tsq_line.append(" -- ".join(tsq_info))
                 
                 if tbq_tsq_line:
-                    message_parts.append(" & ".join(tbq_tsq_line)) # Join with " & " if both are present
+                    message_parts.append(" & ".join(tbq_tsq_line))
 
                 formatted_time = datetime.datetime.strptime(data.timestamp, "%Y-%m-%d %H:%M:%S").strftime("%I:%M:%S %p")
                 formatted_date = datetime.datetime.strptime(data.timestamp, "%Y-%m-%d %H:%M:%S").strftime("%d-%m-%Y")
@@ -938,6 +948,48 @@ class MainWindow(QMainWindow):
         if self.config.auto_trade_enabled:
             self.execute_auto_trade(data, primary_alert_type)
         self.logs_widget.refresh_logs()
+    
+    def execute_auto_trade(self, data: VolumeData, alert_type: str):
+        try:
+            budget_cap = float(self.db_manager.get_setting("budget_cap", "0.0"))
+            trade_ltp_percent = float(self.db_manager.get_setting("trade_ltp_percentage", "0.0"))
+
+            if budget_cap <= 0 or trade_ltp_percent <= 0:
+                print(f"Auto trade skipped due to invalid budget_cap ({budget_cap}) or trade_ltp_percentage ({trade_ltp_percent}).")
+                return
+
+            ltp = data.price
+            if ltp is None or ltp <= 0:
+                print("Auto trade skipped: Invalid LTP.")
+                return
+
+            limit_price = round(ltp * (1 - trade_ltp_percent / 100), 2)
+            quantity = max(1, int(budget_cap // ltp))
+
+            dialog_data = {
+                "symbol": data.symbol,
+                "instrument_type": data.instrument_type,
+                "transaction_type": "Buy",
+                "price": limit_price,
+                "quantity": quantity,
+                "expiry_date": data.expiry_date,
+                "strike_price": data.strike_price,
+                "alert_id": None
+            }
+
+            dialog = TradingDialog(
+                db_manager=self.db_manager,
+                initial_data=dialog_data,
+                parent=self,
+                kite_instance=self.kite,
+                config=self.config
+            )
+
+            dialog.order_placed.connect(self.trading_widget.refresh_trade_history_table)
+            dialog.exec_()
+
+        except Exception as e:
+            print(f"Error during auto trade: {e}")
 
     def _get_exchange_for_instrument_type(self, instrument_type: str) -> str:
         if instrument_type == 'EQ':
@@ -948,7 +1000,7 @@ class MainWindow(QMainWindow):
 
     def open_trading_dialog(self, data: Dict[str, Any]):
         dialog = TradingDialog(self.db_manager, initial_data=data, kite_instance=self.kite, config=self.config)
-        dialog.trade_placed.connect(self.logs_widget.refresh_logs)
+        dialog.order_placed.connect(self.trading_widget.refresh_trade_history_table)
         dialog.exec_()
 
     def open_trading_dialog_from_log(self, log_data: Dict[str, Any]):
@@ -1012,8 +1064,8 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
 
-    app.setApplicationName("VtQube-v1.0.3-beta")
-    app.setApplicationVersion("1.0.3")
+    app.setApplicationName("VtQube-v1.0.4-beta")
+    app.setApplicationVersion("1.0.4")
     app.setOrganizationName("Trading Solutions")
 
     app.setStyle('Fusion')

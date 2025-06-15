@@ -75,7 +75,7 @@ class MonitoringThread(QThread):
                         if not is_market_open:
                             self.status_changed.emit("Market is not open yet")
                             self.stop_monitoring()
-                            self.msleep(1000)
+                            time.sleep(100)
                             return
                         
                         if current_date != self.last_reset_date:
@@ -115,7 +115,6 @@ class MonitoringThread(QThread):
                                         'expiry': instrument_details[4] if len(instrument_details) > 4 else None,
                                         'strike': instrument_details[5] if len(instrument_details) > 5 else None
                                     }
-                                self.msleep(1000)
                             except Exception as e:
                                 error_msg = f"Error fetching data for {symbol}: {str(e)}"
                                 self.error_occurred.emit(error_msg)
@@ -126,17 +125,16 @@ class MonitoringThread(QThread):
                         if tokens:
                             self.status_changed.emit(f"Monitoring active. Next update in 5 seconds.")
                             self._fetch_and_process_live_data(tokens, symbol_map)
-                            print("I CAME HERE 5")
                         
                         if not self.should_continue():
                             break
                     else:
                         self.status_changed.emit(f"Monitoring paused. Resume to continue.")
-                        self.msleep(1000)
+                        time.sleep(100)
                         for i in range(10):
                             if not self.should_continue():
                                 break
-                            self.msleep(1000)
+                            time.sleep(100)
                         
                 except Exception as e:
                     if self.running:
@@ -161,64 +159,70 @@ class MonitoringThread(QThread):
     def _fetch_and_process_live_data(self, tokens: List, symbol_map: Dict):
         if not self.running:
             return
-            
+
         try:
             quote = self.kite.quote(tokens)
             if not self.running:
                 return
-                
-            self.msleep(1000)
-            
-            symbol, instrument_token, instrument_type, expiry_date, strike_price = None, None, None, None, None
-            
+
+            time.sleep(100)
+
+            TBQ_THRESHOLD = self.config.tbq_tsq_threshold
+            TSQ_THRESHOLD = self.config.tbq_tsq_threshold
+            trade_on_tbq_tsq_alert = self.db_manager.get_setting("trade_on_tbq_tsq_alert", 'True') == 'True'
+
             for token in tokens:
-                print("I CAME HERE 6")
                 if not self.running:
                     break
-                    
+
                 symbol = token.split(':')[1]
-                instrument_token = symbol_map[token]['instrument_token']
-                instrument_type = symbol_map[token]['type']
-                expiry_date = symbol_map[token]['expiry']
-                strike_price = symbol_map[token]['strike']
+                details = symbol_map[token]
+                instrument_token = details['instrument_token']
+                instrument_type = details['type']
+                expiry_date = details['expiry']
+                strike_price = details['strike']
+
                 data = quote.get(token, {})
                 tbq = data.get('buy_quantity', 0)
                 tsq = data.get('sell_quantity', 0)
                 last_price = data.get('last_price', 0.0)
-                open_price = data.get('ohlc', {}).get('open', 0.0)
-                high_price = data.get('ohlc', {}).get('high', 0.0)
-                low_price = data.get('ohlc', {}).get('low', 0.0)
-                close_price = data.get('ohlc', {}).get('close', 0.0)
+                ohlc = data.get('ohlc', {})
+                open_price = ohlc.get('open', 0.0)
+                high_price = ohlc.get('high', 0.0)
+                low_price = ohlc.get('low', 0.0)
+                close_price = ohlc.get('close', 0.0)
 
                 if symbol not in self.first_monitored:
                     self.first_monitored[symbol] = [tbq, tsq]
-                    flag = True
 
-                tbq_change_percent = (tbq - self.first_monitored[symbol][0]) / self.first_monitored[symbol][0] if self.first_monitored[symbol][0] != 0 else 0.0
-                tsq_change_percent = (tsq - self.first_monitored[symbol][1]) / self.first_monitored[symbol][1] if self.first_monitored[symbol][1] != 0 else 0.0
+                prev_tbq, prev_tsq = self.first_monitored[symbol]
+                tbq_change_percent = (tbq - prev_tbq) / prev_tbq if prev_tbq != 0 else 0.0
+                tsq_change_percent = (tsq - prev_tsq) / prev_tsq if prev_tsq != 0 else 0.0
+
+                if abs(tbq_change_percent) >= TBQ_THRESHOLD:
+                    self.first_monitored[symbol][0] = tbq
+                    tbq_change_percent = 0.0
+
+                if abs(tsq_change_percent) >= TSQ_THRESHOLD:
+                    self.first_monitored[symbol][1] = tsq
+                    tsq_change_percent = 0.0
 
                 ratio = tbq / tsq if tsq else (tbq / 1.0 if tbq else 0.0)
                 current_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 current_day_high_tbq = self.symbol_daily_max_tbq.get(symbol, tbq)
                 current_day_low_tbq = self.symbol_daily_min_tbq.get(symbol, tbq)
-                if tbq is not None:
-                    if current_day_high_tbq is None or tbq > current_day_high_tbq:
-                        self.symbol_daily_max_tbq[symbol] = tbq
-                        current_day_high_tbq = tbq
-                    if current_day_low_tbq is None or tbq < current_day_low_tbq:
-                        self.symbol_daily_min_tbq[symbol] = tbq
-                        current_day_low_tbq = tbq
+                if tbq > current_day_high_tbq:
+                    self.symbol_daily_max_tbq[symbol] = tbq
+                if tbq < current_day_low_tbq:
+                    self.symbol_daily_min_tbq[symbol] = tbq
 
                 current_day_high_tsq = self.symbol_daily_max_tsq.get(symbol, tsq)
                 current_day_low_tsq = self.symbol_daily_min_tsq.get(symbol, tsq)
-                if tsq is not None:
-                    if current_day_high_tsq is None or tsq > current_day_high_tsq:
-                        self.symbol_daily_max_tsq[symbol] = tsq
-                        current_day_high_tsq = tsq
-                    if current_day_low_tsq is None or tsq < current_day_low_tsq:
-                        self.symbol_daily_min_tsq[symbol] = tsq
-                        current_day_low_tsq = tsq
+                if tsq > current_day_high_tsq:
+                    self.symbol_daily_max_tsq[symbol] = tsq
+                if tsq < current_day_low_tsq:
+                    self.symbol_daily_min_tsq[symbol] = tsq
 
                 volume_data = VolumeData(
                     timestamp=current_timestamp,
@@ -236,85 +240,35 @@ class MonitoringThread(QThread):
                     instrument_type=instrument_type,
                     expiry_date=expiry_date,
                     strike_price=strike_price,
-                    day_high_tbq=current_day_high_tbq,
-                    day_low_tbq=current_day_low_tbq,
-                    day_high_tsq=current_day_high_tsq,
-                    day_low_tsq=current_day_low_tsq
+                    day_high_tbq=self.symbol_daily_max_tbq[symbol],
+                    day_low_tbq=self.symbol_daily_min_tbq[symbol],
+                    day_high_tsq=self.symbol_daily_max_tsq[symbol],
+                    day_low_tsq=self.symbol_daily_min_tsq[symbol]
                 )
-                if not self.running:
-                    break
 
-                triggered_alert_types = self._check_and_trigger_alerts(volume_data)
-                alert_triggered_flag = bool(triggered_alert_types)
+                alert_triggered_flag = False
+                if trade_on_tbq_tsq_alert:
+                    if tbq_change_percent >= TBQ_THRESHOLD:
+                        if self._check_alert_cooldown(symbol, "TBQ Spike"):
+                            self._update_alert_cooldown(symbol, "TBQ Spike")
+                            self.alert_triggered.emit(symbol, "TBQ Spike", current_timestamp, volume_data)
+                            alert_triggered_flag = True
+
+                    if tsq_change_percent >= TSQ_THRESHOLD:
+                        if self._check_alert_cooldown(symbol, "TSQ Spike"):
+                            self._update_alert_cooldown(symbol, "TSQ Spike")
+                            self.alert_triggered.emit(symbol, "TSQ Spike", current_timestamp, volume_data)
+                            alert_triggered_flag = True
+
                 volume_data.alert_triggered = alert_triggered_flag
-            
+
                 if self.running:
-                    print("I CAME HERE 7")
                     self.volume_update.emit(volume_data)
 
         except Exception as e:
             if self.running:
-                print("Fetch Error")
                 error_msg = f"Error fetching data: {str(e)}"
                 self.error_occurred.emit(error_msg)
-
-    def _check_and_trigger_alerts(self, data: VolumeData) -> List[str]:
-        if not self.running:
-            return []
-            
-        triggered_alerts: List[str] = []
-
-        try:
-            tbq_tsq_threshold = self.config.tbq_tsq_threshold
-            trade_on_tbq_tsq_alert = self.db_manager.get_setting("trade_on_tbq_tsq_alert", 'True') == 'True'
-            
-            if trade_on_tbq_tsq_alert:
-                if data.tbq_change_percent is not None and data.tbq_change_percent >= tbq_tsq_threshold:
-                    if self._check_alert_cooldown(data.symbol, "TBQ Spike"):
-                        triggered_alerts.append("TBQ Spike")
-                        self._update_alert_cooldown(data.symbol, "TBQ Spike")
-                        self.stability_check_active[data.symbol] = True
-                        self.stability_start_times.pop(data.symbol, None)
-
-                if data.tsq_change_percent is not None and data.tsq_change_percent >= tbq_tsq_threshold:
-                    if self._check_alert_cooldown(data.symbol, "TSQ Spike"):
-                        triggered_alerts.append("TSQ Spike")
-                        self._update_alert_cooldown(data.symbol, "TSQ Spike")
-                        self.stability_check_active[data.symbol] = True
-                        self.stability_start_times.pop(data.symbol, None)
-
-            if self.stability_check_active.get(data.symbol, False) and not (
-                "TBQ Spike" in triggered_alerts or "TSQ Spike" in triggered_alerts
-            ):
-                if self._check_stability(data.symbol, data, self.config.stability_threshold, self.config.stability_duration):
-                    if data.symbol not in self.stability_start_times:
-                        self.stability_start_times[data.symbol] = datetime.datetime.now()
-                    
-                    time_in_stable_state = (datetime.datetime.now() - self.stability_start_times[data.symbol]).total_seconds()
-                    if time_in_stable_state >= self.config.stability_duration:
-                        self.last_baseline_data[data.symbol] = data
-                        self.stability_check_active[data.symbol] = False
-                        self.stability_start_times.pop(data.symbol, None)
-                else:
-                    self.stability_start_times.pop(data.symbol, None)
-        
-        except Exception as e:
-            if self.running:
-                error_msg = f"Error checking alerts: {str(e)}"
-                self.error_occurred.emit(error_msg)
-        
-        return triggered_alerts
-
-    def _check_stability(self, symbol: str, current_data: VolumeData, stability_threshold: float, stability_duration: int) -> bool:
-        last_baseline = self.last_baseline_data.get(symbol)
-        if not last_baseline:
-            return False
-
-        tbq_deviation_percent = abs(current_data.tbq - last_baseline.tbq) / last_baseline.tbq * 100 if last_baseline.tbq else 0
-        tsq_deviation_percent = abs(current_data.tsq - last_baseline.tsq) / last_baseline.tsq * 100 if last_baseline.tsq else 0
-        is_stable = (tbq_deviation_percent <= stability_threshold and
-                     tsq_deviation_percent <= stability_threshold)
-        return is_stable
 
     def _check_alert_cooldown(self, symbol: str, alert_type: str, cooldown_seconds: int = 300) -> bool:
         key = f"{symbol}_{alert_type}"
@@ -332,7 +286,6 @@ class MonitoringThread(QThread):
         self._stop_event.set()
         self.running = False
         self.paused = False
-        self.wait(5000)
     
     def should_continue(self):
         return not self._stop_event.is_set() and self.running

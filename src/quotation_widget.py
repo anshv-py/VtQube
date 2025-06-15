@@ -10,7 +10,6 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QObject, QThread, QStringListModel
 from PyQt5.QtGui import QColor, QFont, QPalette
 
-# Import necessary classes from your existing modules
 from database import DatabaseManager
 from stock_management import InstrumentManager
 from volume_data import VolumeData
@@ -30,8 +29,8 @@ class AccountInfoWorker(QObject):
                 self.error.emit("KiteConnect instance not available for fetching account info.")
                 return
 
-            user_profile = self.kite.profile() # Fetch user profile
-            balance_data = self.kite.margins() # This gives margin details for different segments
+            user_profile = self.kite.profile()
+            balance_data = self.kite.margins()
 
             equity_margin = 0
             commodity_margin = 0
@@ -40,7 +39,6 @@ class AccountInfoWorker(QObject):
             if 'commodity' in balance_data and 'net' in balance_data['commodity']:
                 commodity_margin = balance_data['commodity']['net']
 
-            # Total P&L
             positions = self.kite.positions()
             net_positions = positions.get('net', [])
             day_positions = positions.get('day', [])
@@ -114,13 +112,13 @@ class TradingWidget(QWidget):
                 margin-top: 10px;
                 padding-top: 15px;
                 background-color: #f8f8f8;
+                font-size: {afps * 1.2}pt;
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 10px;
                 padding: 0 5px 0 5px;
                 color: #333;
-                font-size: {afps * 1.2}pt;
             }}
             QLabel {{
                 font-size: {afps * 1.2}pt;
@@ -223,11 +221,11 @@ class TradingWidget(QWidget):
         account_summary_group.setLayout(account_summary_layout)
 
         self.balance_label = QLabel("Total Balance: ₹ N/A")
-        self.balance_label.setFont(QFont("Arial", 12, QFont.Bold))
+        self.balance_label.setFont(QFont("Arial", int(afps * 1.2), QFont.Bold))
         self.realized_pnl_label = QLabel("Realized P&L: ₹ N/A")
-        self.realized_pnl_label.setFont(QFont("Arial", 12, QFont.Bold))
+        self.realized_pnl_label.setFont(QFont("Arial", int(afps * 1.2), QFont.Bold))
         self.unrealized_pnl_label = QLabel("Unrealized P&L: ₹ N/A")
-        self.unrealized_pnl_label.setFont(QFont("Arial", 12, QFont.Bold))
+        self.unrealized_pnl_label.setFont(QFont("Arial", int(afps * 1.2), QFont.Bold))
 
         account_summary_layout.addWidget(self.balance_label, 0, 0, 1, 2)
         account_summary_layout.addWidget(self.realized_pnl_label, 1, 0, 1, 2)
@@ -359,7 +357,6 @@ class TradingWidget(QWidget):
         self.detail_labels["expiry_date"].setText(expiry_date if expiry_date else "N/A")
         self.detail_labels["strike_price"].setText(f"₹{strike_price:.2f}" if isinstance(strike_price, (int, float)) else "N/A")
         
-        # Reset live data fields to "Fetching..." or "N/A" until an update comes in
         self.detail_labels["last_traded_price_(ltp)"].setText("Fetching...")
         self.detail_labels["open"].setText("N/A")
         self.detail_labels["high"].setText("N/A")
@@ -399,7 +396,7 @@ class TradingWidget(QWidget):
                     else:
                         current_ltp_label.setStyleSheet("color: black;")
                 else:
-                    current_ltp_label.setStyleSheet("color: black;") # Default for first update
+                    current_ltp_label.setStyleSheet("color: black;")
             else:
                 current_ltp_label.setText("N/A")
                 current_ltp_label.setStyleSheet("color: black;")
@@ -425,7 +422,6 @@ class TradingWidget(QWidget):
             QMessageBox.warning(self, "Trade Error", "Live price data not available for the selected instrument. Please wait for an update.")
             return
 
-        # Prepare data to be sent to the TradingDialog
         dialog_data = {
             "symbol": self.current_selected_instrument[0],
             "instrument_type": self.current_selected_instrument[1],

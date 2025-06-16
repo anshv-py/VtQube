@@ -1,17 +1,20 @@
 import sys
 import time
 import datetime
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, List
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QHeaderView,
     QLabel, QPushButton, QTabWidget, QFrame, QStatusBar, QMessageBox,
     QLineEdit, QGroupBox, QTableWidget, QTableWidgetItem, QCompleter,
-    QAbstractItemView
+    QAbstractItemView, QTableView
 )
 import simpleaudio as sa
 from pyqtspinner import WaitingSpinner
-from PyQt5.QtCore import QTimer, Qt, QStringListModel, QThread, QObject, pyqtSignal
-from PyQt5.QtGui import QColor, QIcon, QKeyEvent
+from PyQt5.QtCore import (
+    QTimer, Qt, QStringListModel, QThread, QObject, pyqtSignal, QThreadPool, QRunnable,
+    QAbstractTableModel, QModelIndex, QMimeData, QDataStream, QByteArray, QIODevice
+)
+from PyQt5.QtGui import QColor, QIcon, QKeyEvent, QDrag
 from config import ConfigWidget, AlertConfig
 from database import DatabaseManager
 from monitoring import MonitoringThread, VolumeData
@@ -24,6 +27,103 @@ from quotation_widget import TradingWidget
 from trading_dialog import TradingDialog
 from kiteconnect import KiteConnect
 import traceback
+
+class VolumeDataTableModel(QAbstractTableModel):
+    def __init__(self, data):
+        super().__init__()
+        self._data = data
+        self._headers = [
+            "Timestamp", "Symbol", "Type", "TBQ", "TBQ %", "TSQ", "TSQ %",
+            "Remark", "Price", "Open", "High", "Low", "Close"
+        ]
+
+    def rowCount(self, parent=QModelIndex()):
+        return len(self._data)
+
+    def columnCount(self, parent=QModelIndex()):
+        return len(self._headers)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid() or role != Qt.DisplayRole:
+            return None
+        volume_data = self._data[index.row()]
+        column = index.column()
+        mapping = {
+            0: volume_data.timestamp,
+            1: volume_data.symbol,
+            2: volume_data.instrument_type,
+            3: str(volume_data.tbq),
+            4: f"{volume_data.tbq_change_percent:.2f}%",
+            5: str(volume_data.tsq),
+            6: f"{volume_data.tsq_change_percent:.2f}%",
+            7: getattr(volume_data, 'remark', ""),
+            8: f"{volume_data.price:.2f}",
+            9: f"{volume_data.open_price:.2f}",
+            10: f"{volume_data.high_price:.2f}",
+            11: f"{volume_data.low_price:.2f}",
+            12: f"{volume_data.close_price:.2f}"
+        }
+        return mapping.get(column, "")
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+            return self._headers[section]
+        return super().headerData(section, orientation, role)
+
+    def flags(self, index):
+        default_flags = super().flags(index)
+        if index.isValid():
+            return Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled
+        return Qt.ItemIsEnabled | Qt.ItemIsDropEnabled
+
+    def supportedDropActions(self):
+        return Qt.MoveAction
+
+    def mimeTypes(self):
+        return ['application/vnd.text.list']
+
+    def mimeData(self, indexes):
+        mime_data = QMimeData()
+        encoded_data = QByteArray()
+        stream = QDataStream(encoded_data, QIODevice.WriteOnly)
+        rows = sorted(set(index.row() for index in indexes))
+        for row in rows:
+            stream.writeInt32(row)
+        mime_data.setData('application/vnd.text.list', encoded_data)
+        return mime_data
+
+    def dropMimeData(self, mime_data, action, row, column, parent):
+        if action == Qt.IgnoreAction:
+            return True
+        if not mime_data.hasFormat('application/vnd.text.list'):
+            return False
+
+        encoded_data = mime_data.data('application/vnd.text.list')
+        stream = QDataStream(encoded_data, QIODevice.ReadOnly)
+        source_rows = []
+        while not stream.atEnd():
+            source_rows.append(stream.readInt32())
+
+        if row == -1:
+            row = parent.row()
+
+        items = [self._data[i] for i in source_rows]
+        for i in sorted(source_rows, reverse=True):
+            self.beginRemoveRows(QModelIndex(), i, i)
+            del self._data[i]
+            self.endRemoveRows()
+
+        for i, item in enumerate(items):
+            self.beginInsertRows(QModelIndex(), row + i, row + i)
+            self._data.insert(row + i, item)
+            self.endInsertRows()
+
+        return True
+
+    def update_data(self, new_data):
+        self.beginResetModel()
+        self._data = new_data
+        self.endResetModel()
 
 class QuotationFetcherWorker(QObject):
     live_data_update = pyqtSignal(VolumeData)
@@ -52,7 +152,6 @@ class QuotationFetcherWorker(QObject):
         self.expiry_date = expiry_date
         self.strike_price = strike_price
         self._running = True
-        print(f"DEBUG: QuotationFetcherWorker - Set instrument details: {symbol}, {instrument_type}, {exchange}, {instrument_token}")
 
 
     def stop(self):
@@ -164,11 +263,8 @@ class DraggableTableWidget(QTableWidget):
 
         event.accept()
 
-class VolumeLoggerWorker(QObject):
-    finished = pyqtSignal()
-    error = pyqtSignal(str)
-
-    def __init__(self, db_path: str, data: VolumeData, remark: str = ""):
+class VolumeLoggerWorker(QRunnable):
+    def __init__(self, db_path, data, remark):
         super().__init__()
         self.db_path = db_path
         self.data = data
@@ -179,9 +275,8 @@ class VolumeLoggerWorker(QObject):
             db = DatabaseManager(self.db_path)
             db.log_volume_data(self.data, self.remark)
             db.close()
-            self.finished.emit()
         except Exception as e:
-            self.error.emit(str(e))
+            print(f"Volume logging error: {e}")
 class MainWindow(QMainWindow):
     init_success = pyqtSignal()
     def __init__(self):
@@ -192,42 +287,53 @@ class MainWindow(QMainWindow):
         self.futures_manager = InstrumentManager(self.db_manager, instrument_type='FUT', user_table_name='user_futures')
         self.options_manager = InstrumentManager(self.db_manager, instrument_type='OPT', user_table_name='user_options')
 
+        print("1")
         self.config = AlertConfig(
-            tbq_tsq_threshold=0.0, stability_threshold=0.0, stability_duration=0,
+            tbq_tsq_threshold=0.0,
             start_time=None, end_time=None,
-            budget_cap=0.0, trade_ltp_percentage=0.0, trade_on_tbq_tsq_alert=True
+            budget_cap=0.0, trade_ltp_percentage=0.0
         )
         self.config.load_settings_from_db(self.db_manager)
         self.config_widget = ConfigWidget(self.db_manager)
-
         self.kite = None
         self.monitoring_thread: Optional[MonitoringThread] = None
         self.request_token_server: Optional[RequestTokenServer] = None
         self.instrument_fetch_thread: Optional[InstrumentFetchThread] = None
 
-        self.current_live_data: Dict[str, VolumeData] = {}
+        self.current_live_data = {}
+        self.volume_data_log_queue = []
+
+        self.batch_log_timer = QTimer(self)
+        self.batch_log_timer.setInterval(3000)
+        self.batch_log_timer.timeout.connect(self.flush_log_queue)
+        self.batch_log_timer.start()
+
         self.specific_monitored_symbol: Optional[str] = None
 
         self.end_of_day_timer = QTimer(self)
         self.end_of_day_timer.setSingleShot(True)
         self.logger_threads = []
+
+        print("2")
+        self.thread = QThreadPool()
         QApplication.processEvents()
 
+        print("3")
         self.init_ui()
         self.load_settings()
         self._initialize_kite_from_db_settings()
 
+        print("4")
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self.update_status_bar)
         self.status_timer.start(1000)
 
     def init_ui(self):
-        self.setWindowTitle("VtQube v1.0.3")
+        self.setWindowTitle("VtQube v1.0.4")
         screen_rect = QApplication.desktop().availableGeometry(self)
         self.setGeometry(screen_rect)
         self.showMaximized()
         self.setWindowIcon(QIcon('assets/icon.jpg'))
-        afps = QApplication.instance().font().pointSize() if QApplication.instance() else 10
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -248,7 +354,6 @@ class MainWindow(QMainWindow):
                             speed=1.5707963267948966,
                             color=QColor(0, 0, 255)
                         )
-
         self.tab_widget.addTab(self.config_widget, "Configuration")
         self.config_widget.api_keys_saved.connect(self.on_api_keys_saved)
         self.config_widget.login_success.connect(self.on_login_success)
@@ -301,7 +406,7 @@ class MainWindow(QMainWindow):
         specific_monitor_layout.addWidget(QLabel("Symbol:"))
         self.specific_symbol_input = QLineEdit()
         self.specific_symbol_input.setPlaceholderText("Enter symbol (e.g., RELIANCE) and press Enter")
-        
+
         self.completer_model = QStringListModel()
         self.completer = QCompleter(self.completer_model, self)
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
@@ -312,17 +417,19 @@ class MainWindow(QMainWindow):
 
         monitoring_layout.addWidget(control_frame)
         monitoring_layout.addWidget(specific_monitor_group)
-
-        self.live_data_table = DraggableTableWidget()
-        self.live_data_table.setColumnCount(13)
-        self.live_data_table.setHorizontalHeaderLabels([
-            "Timestamp", "Symbol", "Type", "TBQ", "TBQ Chg %", "TSQ", "TSQ Chg %",
-            "Remark", "LTP", "Open", "High", "Low", "Close",
-        ])
+        self.live_data = []
+        self.table_model = VolumeDataTableModel(self.live_data)
+        self.live_data_table = QTableView(self)
+        self.live_data_table.setModel(self.table_model)
+        self.live_data_table.setDragDropMode(QTableView.InternalMove)
+        self.live_data_table.setDragEnabled(True)
+        self.live_data_table.setAcceptDrops(True)
+        self.live_data_table.setDropIndicatorShown(True)
+        self.live_data_table.setDefaultDropAction(Qt.MoveAction)
         self.live_data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         monitoring_layout.addWidget(self.live_data_table)
+        self.setCentralWidget(self.tab_widget)
         self.live_data_table.doubleClicked.connect(self.on_monitoring_table_double_clicked)
-        self.live_data_table.enterPressed.connect(self.apply_display_order_to_monitoring)
 
         self.live_data_table.setDragEnabled(True)
         self.live_data_table.setAcceptDrops(True)
@@ -333,7 +440,7 @@ class MainWindow(QMainWindow):
         self.stat_cards_layout = QHBoxLayout()
         monitoring_layout.addLayout(self.stat_cards_layout)
         self.init_stat_cards()
-
+        
         self.logs_widget = LogsWidget(self.db_manager)
         self.tab_widget.addTab(self.logs_widget, "Logs")
         self.logs_widget.log_row_double_clicked.connect(self.open_trading_dialog_from_log)
@@ -350,6 +457,11 @@ class MainWindow(QMainWindow):
         self.trading_widget.stop_live_data_for_symbol.connect(self._stop_specific_symbol_quotation_fetch)
         self.trading_widget.open_trading_dialog.connect(self.open_trading_dialog)
         self.init_success.connect(self._on_kite_init_success)
+
+        self.log_refresh_timer = QTimer(self)
+        self.log_refresh_timer.setSingleShot(True)
+        self.log_refresh_timer.setInterval(3000)
+        self.log_refresh_timer.timeout.connect(self.logs_widget.refresh_logs)
 
         self.quotation_fetcher_thread: Optional[QThread] = None
         self.quotation_fetcher_worker: Optional[QuotationFetcherWorker] = None
@@ -421,7 +533,10 @@ class MainWindow(QMainWindow):
         self.quotation_fetcher_worker.moveToThread(self.quotation_fetcher_thread)
         self.quotation_fetcher_thread.started.connect(self.quotation_fetcher_worker.run)
         self.quotation_fetcher_worker.live_data_update.connect(self.trading_widget.update_quotation_data)
-        self.quotation_fetcher_worker.error_occurred.connect(lambda msg: QMessageBox.critical(self, "Live Data Error (Trading)", msg))
+        self.quotation_fetcher_worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Live Data Error (Trading)", msg), 
+            Qt.QueuedConnection
+        )
         
         self.quotation_fetcher_worker.finished.connect(self.quotation_fetcher_thread.quit)
         self.quotation_fetcher_worker.finished.connect(self.quotation_fetcher_worker.deleteLater)
@@ -550,9 +665,6 @@ class MainWindow(QMainWindow):
             if is_valid_symbol:
                 self.specific_monitored_symbol = symbol
                 QMessageBox.information(self, "Monitoring Selection", f"Monitoring set to: {symbol}")
-                if self.monitoring_thread and self.monitoring_thread.isRunning():
-                    self.stop_monitoring()
-                    self.start_monitoring()
             else:
                 QMessageBox.warning(self, "Invalid Symbol", f"'{symbol}' is not a valid tradable instrument.")
                 self.specific_symbol_input.clear()
@@ -560,9 +672,6 @@ class MainWindow(QMainWindow):
         else:
             self.specific_monitored_symbol = None
             QMessageBox.information(self, "Monitoring Selection", "Monitoring reverted to all user-selected instruments.")
-            if self.monitoring_thread and self.monitoring_thread.isRunning():
-                self.stop_monitoring()
-                self.start_monitoring()
     
     def on_monitoring_table_double_clicked(self, index):
         row = index.row()
@@ -635,7 +744,10 @@ class MainWindow(QMainWindow):
         )
         self.instrument_fetch_thread.fetch_started.connect(self.status_label.setText)
         self.instrument_fetch_thread.fetch_finished.connect(self.status_label.setText)
-        self.instrument_fetch_thread.error_occurred.connect(lambda msg: QMessageBox.critical(self, "Instrument Fetch Error", msg))
+        self.instrument_fetch_thread.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Instrument Fetch Error", msg),
+            Qt.QueuedConnection
+        )
         self.instrument_fetch_thread.all_fetches_complete.connect(self.on_all_fetches_complete)
         self.instrument_fetch_thread.start()
         self.status_label.setText("Fetching tradable instruments...")
@@ -696,12 +808,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "KiteConnect Error", "Please log in to KiteConnect first.")
             return
 
-        if self.monitoring_thread and self.monitoring_thread.isRunning():
-            QMessageBox.information(self, "Monitoring", "Stopping previous monitoring session...")
-            self.stop_monitoring()
-            
-            QApplication.processEvents()
-
         self.config.load_settings_from_db(self.db_manager)
 
         if not self.config.is_valid():
@@ -728,10 +834,11 @@ class MainWindow(QMainWindow):
             futures_manager=self.futures_manager,
             options_manager=self.options_manager
         )
+        self.monitoring_thread.volume_batch_update.connect(self.update_live_data_table_batch)
         self.monitoring_thread.set_monitored_symbols(monitored_symbols_for_thread)
         
-        self.monitoring_thread.volume_update.connect(
-            self.update_live_data_table, 
+        self.monitoring_thread.volume_batch_update.connect(
+            self.handle_volume_batch,
             Qt.QueuedConnection
         )
         self.monitoring_thread.alert_triggered.connect(
@@ -744,11 +851,7 @@ class MainWindow(QMainWindow):
         )
         self.monitoring_thread.error_occurred.connect(
             lambda msg: QMessageBox.critical(self, "Monitoring Error", msg),
-            Qt.DirectConnection
-        )
-        self.monitoring_thread.finished.connect(
-            self.on_monitoring_thread_finished,
-            Qt.DirectConnection
+            Qt.QueuedConnection
         )
         
         self.monitoring_thread.start()
@@ -771,112 +874,62 @@ class MainWindow(QMainWindow):
                 self.toggle_pause_resume_btn.setStyleSheet("background-color: #5bc0de;")
                 self.status_label.setText("Status: Paused")
 
+    def handle_volume_batch(self, batch: List[VolumeData]):
+        self.update_live_data_table_batch(batch)
+    
+    def update_live_data_table_batch(self, batch):
+        symbol_index = {v.symbol: i for i, v in enumerate(self.live_data)}
+        for data in batch:
+            if data.symbol in symbol_index:
+                self.live_data[symbol_index[data.symbol]] = data
+            else:
+                self.live_data.append(data)
+            if data.alert_triggered or data.is_baseline:
+                remark_text = "ALERT" if data.alert_triggered else "Baseline"
+                self.volume_data_log_queue.append((data, remark_text))
+
+        self.table_model.update_data(self.live_data)
+
+        if not self.log_refresh_timer.isActive():
+            self.log_refresh_timer.start()
+
+    def flush_log_queue(self):
+        if not self.volume_data_log_queue:
+            return
+        try:
+            db = DatabaseManager(self.db_manager.db_path)
+            for data, remark in self.volume_data_log_queue:
+                db.log_volume_data(data, remark)
+            db.close()
+        except Exception as e:
+            print("Log queue error:", e)
+        self.volume_data_log_queue.clear()
+
     def stop_monitoring(self):
         if self.monitoring_thread:
+            if self.monitoring_thread.isRunning():
+                self.monitoring_thread.stop_monitoring()
+                self.monitoring_thread.quit()
+                if not self.monitoring_thread.wait(5000):
+                    print("WARNING: Monitoring thread did not terminate gracefully.")
+            
             try:
-                self.monitoring_thread.volume_update.disconnect()
+                self.monitoring_thread.volume_batch_update.disconnect()
                 self.monitoring_thread.alert_triggered.disconnect()
                 self.monitoring_thread.status_changed.disconnect()
                 self.monitoring_thread.error_occurred.disconnect()
-
-                self.monitoring_thread.wait(100)
-                self.monitoring_thread.deleteLater()
-                self.monitoring_thread = None
-            except:
+            except TypeError:
                 pass
-            self._update_ui_after_stop()
-    
-    def _update_ui_after_stop(self):
+
+            self.monitoring_thread.deleteLater()
+            self.monitoring_thread = None
+
         self.start_monitor_btn.setEnabled(True)
         self.toggle_pause_resume_btn.setEnabled(False)
         self.stop_monitor_btn.setEnabled(False)
         self.status_label.setText("Status: Stopped")
-        
-        self.live_data_table.setRowCount(0)
-        self.current_live_data.clear()
-        self.update_monitoring_stat_cards()
 
-    def on_monitoring_thread_finished(self):
-        print("Monitoring thread finished naturally")
-        self._update_ui_after_stop()
-
-    def update_live_data_table(self, data: VolumeData):
-        row_idx = -1
-        for i in range(self.live_data_table.rowCount()):
-            if self.live_data_table.item(i, 1) and self.live_data_table.item(i, 1).text() == data.symbol:
-                row_idx = i
-                break
-
-        if row_idx == -1:
-            row_idx = self.live_data_table.rowCount()
-            self.live_data_table.insertRow(row_idx)
-
-        self.current_live_data[data.symbol] = data
-        self.live_data_table.setItem(row_idx, 0, QTableWidgetItem(data.timestamp.split(' ')[1]))
-        self.live_data_table.setItem(row_idx, 1, QTableWidgetItem(data.symbol))
-        self.live_data_table.setItem(row_idx, 2, QTableWidgetItem(data.instrument_type if data.instrument_type else "N/A"))
-        self.live_data_table.setItem(row_idx, 3, QTableWidgetItem(f"{data.tbq:,}"))
-        self.live_data_table.setItem(row_idx, 4, QTableWidgetItem(f"{data.tbq_change_percent * 100:.2f}"))
-        self.live_data_table.setItem(row_idx, 5, QTableWidgetItem(f"{data.tsq:,}"))
-        self.live_data_table.setItem(row_idx, 6, QTableWidgetItem(f"{data.tsq_change_percent * 100:.2f}"))
-        self.live_data_table.setItem(row_idx, 8, QTableWidgetItem(f"₹{data.price:.2f}"))
-        self.live_data_table.setItem(row_idx, 9, QTableWidgetItem(f"₹{data.open_price:.2f}"))
-        self.live_data_table.setItem(row_idx, 10, QTableWidgetItem(f"₹{data.high_price:.2f}"))
-        self.live_data_table.setItem(row_idx, 11, QTableWidgetItem(f"₹{data.low_price:.2f}"))
-        self.live_data_table.setItem(row_idx, 12, QTableWidgetItem(f"₹{data.close_price:.2f}"))
-        
-        remark_text = ""
-        remark_color = QColor(255, 255, 255)
-
-        tbq_threshold_percent = self.config.tbq_tsq_threshold
-        
-        tbq_changed = data.tbq_change_percent is not None and abs(data.tbq_change_percent) >= tbq_threshold_percent
-        tsq_changed = data.tsq_change_percent is not None and abs(data.tsq_change_percent) >= tbq_threshold_percent
-
-
-        if tbq_changed or tsq_changed:
-            tbq_rise = data.tbq_change_percent > 0 if tbq_changed else False
-            tsq_rise = data.tsq_change_percent > 0 if tsq_changed else False
-
-            remark_text = ""
-            if tbq_changed:
-                remark_text += f"TBQ ({data.tbq_change_percent:.2%})"
-            if tsq_changed:
-                if remark_text:
-                    remark_text += " || "
-                remark_text += f"TSQ ({data.tsq_change_percent:.2%})"
-
-            if tbq_rise or tsq_rise:
-                remark_color = QColor(173, 216, 230)
-            else:
-                remark_color = QColor(255, 223, 186)
-        else:
-            remark_text = ""
-            remark_color = QColor(255, 255, 255)
-
-
-        remark_item = QTableWidgetItem(remark_text)
-        remark_item.setBackground(remark_color)
-        self.live_data_table.setItem(row_idx, 7, remark_item)
-        
-        thread = QThread()
-        worker = VolumeLoggerWorker(self.db_manager.db_path, data, remark_text)
-        worker.moveToThread(thread)
-
-        thread.started.connect(worker.run)
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-
-        self.logger_threads.append(thread)
-        thread.finished.connect(lambda: self.logger_threads.remove(thread))
-
-        worker.error.connect(lambda e: print(f"Volume logging error: {e}"))
-        thread.start()
-        self.logs_widget.refresh_logs()
-        self.update_monitoring_stat_cards()
-
-    def on_alert_triggered(self, symbol: str, combined_message_type_string: str, primary_alert_type: str, data: VolumeData):
+    def on_alert_triggered(self, symbol: str, combined_message_type_string: str, data: VolumeData):
         alerts_count = self.db_manager.get_alerts_count_today()
         self.update_stat_card("Total Alerts Today", str(alerts_count))
 
@@ -908,21 +961,21 @@ class MainWindow(QMainWindow):
                 tbq_info = []
                 tsq_info = []
 
-                is_tbq_alert = "tbq" in combined_message_type_string.lower() or "tbq spike" in primary_alert_type.lower()
-                is_tsq_alert = "tsq" in combined_message_type_string.lower() or "tsq spike" in primary_alert_type.lower()
+                is_tbq_alert = "tbq" in combined_message_type_string.lower()
+                is_tsq_alert = "tsq" in combined_message_type_string.lower()
 
                 if is_tbq_alert:
                     if data.day_high_tbq is not None:
                         tbq_info.append(f"TBQ Day High: {data.day_high_tbq:,}")
                     if data.day_low_tbq is not None:
-                        if "spike" not in primary_alert_type.lower():
+                        if "spike" not in combined_message_type_string.lower():
                             tbq_info.append(f"TBQ Day Low: {data.day_low_tbq:,}")
 
                 if is_tsq_alert:
                     if data.day_high_tsq is not None:
                         tsq_info.append(f"TSQ Day High: {data.day_high_tsq:,}")
                     if data.day_low_tsq is not None:
-                        if "spike" not in primary_alert_type.lower():
+                        if "spike" not in combined_message_type_string.lower():
                             tsq_info.append(f"TSQ Day Low: {data.day_low_tsq:,}")
                 
                 tbq_tsq_line = []
@@ -946,10 +999,10 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Telegram Error", f"Failed to send Telegram alert: {e}")
 
         if self.config.auto_trade_enabled:
-            self.execute_auto_trade(data, primary_alert_type)
+            self.execute_auto_trade(data)
         self.logs_widget.refresh_logs()
     
-    def execute_auto_trade(self, data: VolumeData, alert_type: str):
+    def execute_auto_trade(self, data: VolumeData):
         try:
             budget_cap = float(self.db_manager.get_setting("budget_cap", "0.0"))
             trade_ltp_percent = float(self.db_manager.get_setting("trade_ltp_percentage", "0.0"))
@@ -1038,6 +1091,9 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Status: Stopped")
 
     def closeEvent(self, event):
+        self._stop_specific_symbol_quotation_fetch()
+        self.trading_widget.stop_account_info_timer()
+
         if self.monitoring_thread and self.monitoring_thread.isRunning():
             reply = QMessageBox.question(
                 self, "Confirm Exit",
@@ -1047,16 +1103,11 @@ class MainWindow(QMainWindow):
 
             if reply == QMessageBox.Yes:
                 self.stop_monitoring()
-                QApplication.processEvents()
-                
                 event.accept()
             else:
                 event.ignore()
         else:
             event.accept()
-        
-        self._stop_specific_symbol_quotation_fetch()
-        self.trading_widget.stop_account_info_timer()
     
     def close_application(self):
         self.close()

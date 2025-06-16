@@ -24,8 +24,6 @@ except ImportError:
 class AlertConfig:
     def __init__(self,
                  tbq_tsq_threshold: float,
-                 stability_threshold: float,
-                 stability_duration: int,
                  start_time: Optional[datetime.time],
                  end_time: Optional[datetime.time],
                  telegram_bot_token: Optional[str] = None,
@@ -33,11 +31,8 @@ class AlertConfig:
                  auto_trade_enabled: bool = False,
                  budget_cap: float = 0.0,
                  trade_ltp_percentage: float = 0.0,
-                 trade_on_tbq_tsq_alert: bool = True
                  ):
         self.tbq_tsq_threshold = tbq_tsq_threshold
-        self.stability_threshold = stability_threshold
-        self.stability_duration = stability_duration
         self.start_time = start_time
         self.end_time = end_time
         self.telegram_bot_token = telegram_bot_token
@@ -46,10 +41,9 @@ class AlertConfig:
         self.auto_trade_enabled = auto_trade_enabled
         self.budget_cap = budget_cap
         self.trade_ltp_percentage = trade_ltp_percentage
-        self.trade_on_tbq_tsq_alert = trade_on_tbq_tsq_alert
 
     def is_valid(self) -> bool:
-        if not (self.tbq_tsq_threshold >= 0 and self.stability_threshold >= 0 and self.stability_duration >= 0):
+        if not (self.tbq_tsq_threshold >= 0):
             return False
         if self.start_time is None or self.end_time is None:
             pass
@@ -57,8 +51,6 @@ class AlertConfig:
 
     def load_settings_from_db(self, db_manager: DatabaseManager):
         self.tbq_tsq_threshold = float(db_manager.get_setting("tbq_tsq_threshold", "0.0"))
-        self.stability_threshold = float(db_manager.get_setting("stability_threshold", "0.0"))
-        self.stability_duration = int(db_manager.get_setting("stability_duration", "0"))
         
         start_time_str = db_manager.get_setting("start_time")
         end_time_str = db_manager.get_setting("end_time")
@@ -79,7 +71,6 @@ class AlertConfig:
         self.auto_trade_enabled = db_manager.get_setting("auto_trade_enabled", "False") == "True"
         self.budget_cap = float(db_manager.get_setting("budget_cap", "0.0"))
         self.trade_ltp_percentage = float(db_manager.get_setting("trade_ltp_percentage", "0.0"))
-        self.trade_on_tbq_tsq_alert = db_manager.get_setting("trade_on_tbq_tsq_alert", "True") == "True"
 
 class ConfigWidget(QWidget):
     api_keys_saved = pyqtSignal()
@@ -110,6 +101,7 @@ class ConfigWidget(QWidget):
                 margin-top: 10px;
                 padding-top: 15px;
                 background-color: #ffffff;
+                font-size: {int(afps * 1.2)}pt;
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
@@ -185,19 +177,6 @@ class ConfigWidget(QWidget):
         self.tbq_tsq_threshold_spin.setDecimals(2)
         alert_layout.addWidget(self.tbq_tsq_threshold_spin, 1, 1)
 
-        alert_layout.addWidget(QLabel("Stability Threshold (% Deviation):"), 4, 0)
-        self.stability_threshold_spin = QDoubleSpinBox()
-        self.stability_threshold_spin.setRange(0.01, 100.00)
-        self.stability_threshold_spin.setSingleStep(0.01)
-        self.stability_threshold_spin.setDecimals(2)
-        alert_layout.addWidget(self.stability_threshold_spin, 4, 1)
-
-        alert_layout.addWidget(QLabel("Stability Duration (seconds):"), 5, 0)
-        self.stability_duration_spin = QSpinBox()
-        self.stability_duration_spin.setRange(1, 3600)
-        self.stability_duration_spin.setSingleStep(1)
-        alert_layout.addWidget(self.stability_duration_spin, 5, 1)
-
         alert_layout.addWidget(QLabel("Market Start Time:"), 6, 0)
         self.start_time_edit = QTimeEdit()
         self.start_time_edit.setDisplayFormat("HH:mm:ss")
@@ -238,10 +217,6 @@ class ConfigWidget(QWidget):
         self.trade_ltp_percentage_spin.setSingleStep(0.01)
         self.trade_ltp_percentage_spin.setDecimals(2)
         auto_trade_layout.addWidget(self.trade_ltp_percentage_spin, 7, 1)
-
-        auto_trade_layout.addWidget(QLabel("Trade on TBQ/TSQ Alert:"), 8, 0)
-        self.trade_on_tbq_tsq_alert_checkbox = QCheckBox()
-        auto_trade_layout.addWidget(self.trade_on_tbq_tsq_alert_checkbox, 8, 1)
 
         auto_trade_group.setLayout(auto_trade_layout)
         layout.addWidget(auto_trade_group)
@@ -295,9 +270,7 @@ class ConfigWidget(QWidget):
     def load_settings(self):
         defaults = AlertConfig(
             tbq_tsq_threshold=0.05,
-            stability_threshold=0.01,
-            stability_duration=300,
-            start_time=QTime(9, 15, 0),
+            start_time=QTime(9, 0, 0),
             end_time=QTime(15, 30, 0)
         )
 
@@ -305,8 +278,6 @@ class ConfigWidget(QWidget):
         self.api_secret_input.setText(self.db_manager.get_setting("api_secret", ""))
 
         self.tbq_tsq_threshold_spin.setValue(float(self.db_manager.get_setting("tbq_tsq_threshold", str(defaults.tbq_tsq_threshold))))
-        self.stability_threshold_spin.setValue(float(self.db_manager.get_setting("stability_threshold", str(defaults.stability_threshold))))
-        self.stability_duration_spin.setValue(int(self.db_manager.get_setting("stability_duration", str(defaults.stability_duration))))
 
         start_time_str = self.db_manager.get_setting("start_time", defaults.start_time.toString("HH:mm:ss"))
         end_time_str = self.db_manager.get_setting("end_time", defaults.end_time.toString("HH:mm:ss"))
@@ -327,17 +298,12 @@ class ConfigWidget(QWidget):
         self.trade_ltp_percentage_spin.setValue(
             float(self.db_manager.get_setting("trade_ltp_percentage", str(defaults.trade_ltp_percentage)))
         )
-        self.trade_on_tbq_tsq_alert_checkbox.setChecked(
-            self.db_manager.get_setting("trade_on_tbq_tsq_alert", str(defaults.trade_on_tbq_tsq_alert)) == "True"
-        )
 
     def save_settings(self):
         self.db_manager.save_setting("api_key", self.api_key_input.text())
         self.db_manager.save_setting("api_secret", self.api_secret_input.text())
 
         self.db_manager.save_setting("tbq_tsq_threshold", str(self.tbq_tsq_threshold_spin.value()))
-        self.db_manager.save_setting("stability_threshold", str(self.stability_threshold_spin.value()))
-        self.db_manager.save_setting("stability_duration", str(self.stability_duration_spin.value()))
 
         self.db_manager.save_setting("start_time", self.start_time_edit.time().toString("HH:mm:ss"))
         self.db_manager.save_setting("end_time", self.end_time_edit.time().toString("HH:mm:ss"))
@@ -349,7 +315,6 @@ class ConfigWidget(QWidget):
         self.db_manager.save_setting("auto_trade_enabled", str(self.enable_auto_trade_checkbox.isChecked()))
         self.db_manager.save_setting("budget_cap", str(self.budget_cap_spin.value()))
         self.db_manager.save_setting("trade_ltp_percentage", str(self.trade_ltp_percentage_spin.value()))
-        self.db_manager.save_setting("trade_on_tbq_tsq_alert", str(self.trade_on_tbq_tsq_alert_checkbox.isChecked()))
         self.api_keys_saved.emit()
 
         QMessageBox.information(self, "Settings Saved", "Application settings have been saved successfully!")
@@ -357,8 +322,6 @@ class ConfigWidget(QWidget):
     def get_config(self) -> AlertConfig:
         return AlertConfig(
             tbq_tsq_threshold=self.tbq_tsq_threshold_spin.value(),
-            stability_threshold=self.stability_threshold_spin.value(),
-            stability_duration=self.stability_duration_spin.value(),
             start_time=self.start_time_edit.time(),
             end_time=self.end_time_edit.time(),
 
@@ -368,7 +331,6 @@ class ConfigWidget(QWidget):
             auto_trade_enabled=self.enable_auto_trade_checkbox.isChecked(),
             budget_cap=self.budget_cap_spin.value(),
             trade_ltp_percentage=self.trade_ltp_percentage_spin.value(),
-            trade_on_tbq_tsq_alert=self.trade_on_tbq_tsq_alert_checkbox.isChecked()
         )
 
     def fetch_access_token(self):

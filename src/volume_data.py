@@ -18,7 +18,9 @@ class VolumeData:
     tbq_change_percent: Optional[float] = None
     tsq_change_percent: Optional[float] = None
     ratio: Optional[float] = None
+    remark: Optional[str] = None
     alert_triggered: Optional[bool] = False
+    is_baseline: Optional[bool] = False
     open_price: Optional[float] = None
     high_price: Optional[float] = None
     low_price: Optional[float] = None

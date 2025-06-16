@@ -40,22 +40,19 @@ class AccountInfoWorker(QObject):
                 commodity_margin = balance_data['commodity']['net']
 
             positions = self.kite.positions()
-            net_positions = positions.get('net', [])
-            day_positions = positions.get('day', [])
+            realized_pnl, unrealized_pnl = 0, 0
+            for i in ['net', 'day']:
+                position = positions.get(i, [])
 
-            realized_pnl = 0.0
-            unrealized_pnl = 0.0
+                for p in position:
+                    sell_value, buy_value = p.get('sell_value'), p.get('buy_value')
+                    quantity, last_price = p.get('quantity'), p.get('last_price')
+                    sell_price, multiplier = p.get('sell_price'), p.get('multiplier')
 
-            for position in net_positions:
-                realized_pnl += position.get('realised_pnl', 0.0)
-                unrealized_pnl += position.get('unrealised_pnl', 0.0)
-            
-            # Day positions might also have P&L that adds to the current day's figures
-            for position in day_positions:
-                realized_pnl += position.get('realised_pnl', 0.0)
-                unrealized_pnl += position.get('unrealised_pnl', 0.0)
+                    realized_pnl += (sell_value - buy_value) + (quantity * sell_price * multiplier)
+                    unrealized_pnl += (sell_value - buy_value) + (quantity * last_price * multiplier)
 
-            total_balance = equity_margin + commodity_margin # Sum of Equity + Commodity margins
+            total_balance = equity_margin + commodity_margin
 
             account_info = {
                 "total_balance": total_balance,

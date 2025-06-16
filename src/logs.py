@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QComboBox, QMenu, QMessageBox, QApplication, QDateEdit
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject, QThread
-from PyQt5.QtGui import QColor, QBrush, QFont
+from PyQt5.QtGui import QColor, QBrush
 from database import DatabaseManager
 
 class LogRefreshWorker(QObject):
@@ -40,22 +40,19 @@ class LogRefreshWorker(QObject):
                     "high_price": volume_data['high'],
                     "low_price": volume_data['low'],
                     "close_price": volume_data['close'],
-                    "type_filter_category": "Log",
-                    "is_initial_log": False
+                    "type_filter_category": "Log" if volume_data['alert_triggered'] else "Alert",
+                    "is_baseline_log": volume_data['is_baseline']
                 })
-
             all_logs.sort(key=lambda x: datetime.datetime.strptime(x['timestamp'], "%Y-%m-%d %H:%M:%S"))
 
-            initial_log_tracker = {}
+            baseline_log_tracker = {}
             for log_entry in all_logs:
                 symbol = log_entry['symbol']
                 log_date = datetime.datetime.strptime(log_entry['timestamp'], "%Y-%m-%d %H:%M:%S").date()
-                if (symbol, log_date) not in initial_log_tracker:
-                    log_entry['is_initial_log'] = True
-                    initial_log_tracker[(symbol, log_date)] = True
+                if (symbol, log_date) not in baseline_log_tracker and log_entry['is_baseline_log']:
+                    baseline_log_tracker[(symbol, log_date)] = True
 
             all_logs.sort(key=lambda x: datetime.datetime.strptime(x['timestamp'], "%Y-%m-%d %H:%M:%S"), reverse=True)
-
             self.finished.emit(all_logs)
         except Exception as e:
             self.error.emit(f"Failed to refresh logs: {str(e)}")
@@ -73,10 +70,13 @@ class LogsWidget(QWidget):
         self.current_page = 0
         self.logs_per_page = 50
         self.filtered_logs = []
+        print("3h11")
         self.init_ui()
         self.log_thread = None
         self.log_worker = None
+        print("3h12")
         self.refresh_logs()
+        print("3h13")
 
     def init_ui(self):
         afps = QApplication.instance().font().pointSize() if QApplication.instance() else 10
@@ -209,20 +209,24 @@ class LogsWidget(QWidget):
         start_date = self.start_date_edit.date().toPyDate()
         end_date = self.end_date_edit.date().toPyDate()
         filtered_logs = []
+
         for log_entry in self.alerts_cache:
             log_date = datetime.datetime.strptime(log_entry['timestamp'], "%Y-%m-%d %H:%M:%S").date()
-            
             symbol_match = (symbol_filter == "All Symbols" or log_entry.get('symbol') == symbol_filter)
             type_match = (type_filter == "All Types" or log_entry.get('type_filter_category') == type_filter)
             date_match = (start_date <= log_date <= end_date)
 
-            if symbol_match and type_match and date_match:
+            is_alert = log_entry.get('type_filter_category') == "Alert"
+            is_baseline = log_entry.get('is_baseline_log') is True
+
+            if symbol_match and type_match and date_match and (is_alert or is_baseline):
                 filtered_logs.append(log_entry)
-        
+
         self.filtered_logs = filtered_logs
         self.current_page = 0
         self._populate_table(self.filtered_logs)
         self.update_page_label()
+
     
     def update_page_label(self):
         total_pages = max(1, (len(self.filtered_logs) + self.logs_per_page - 1) // self.logs_per_page)
@@ -332,7 +336,7 @@ class LogsWidget(QWidget):
                         self.log_worker.error.disconnect()
 
                     log_thread.quit()
-                    log_thread.wait(3000)
+                    log_thread.wait(1000)
 
                     if log_thread.isRunning():
                         log_thread.terminate()
@@ -352,8 +356,6 @@ class LogsWidget(QWidget):
 
     def refresh_logs(self):
         self.cleanup_thread()
-
-        print("I CAME HERE 10")
         self.log_thread = QThread()
         self.log_worker = LogRefreshWorker(self.db_manager.db_path)
         self.log_worker.moveToThread(self.log_thread)
@@ -527,18 +529,17 @@ class LogsWidget(QWidget):
         if 'Timestamp' in df_for_excel.columns:
             df_for_excel['Timestamp'] = pd.to_datetime(df_for_excel['Timestamp']).dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        file_name = f"all_filtered_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        file_name = f"volume_logs_{datetime.datetime.today()}.xlsx"
 
         try:
             writer = pd.ExcelWriter(file_name, engine='xlsxwriter')
             workbook = writer.book
             worksheet = workbook.add_worksheet('Logs')
 
-            # Define formats
-            light_orange_format = workbook.add_format({'bg_color': '#FFDCAF'}) # Light Orange
-            light_blue_format = workbook.add_format({'bg_color': '#B4D7F7'})   # Light Blue
-            lighter_blue_format = workbook.add_format({'bg_color': '#C8DCFF'}) # Lighter Blue for initial logs
-            light_grey_format = workbook.add_format({'bg_color': '#F0F0F0'})   # Light Grey for alternating rows
+            light_orange_format = workbook.add_format({'bg_color': '#FFDCAF'})
+            light_blue_format = workbook.add_format({'bg_color': '#B4D7F7'})
+            lighter_blue_format = workbook.add_format({'bg_color': '#C8DCFF'})
+            light_grey_format = workbook.add_format({'bg_color': '#F0F0F0'})
             default_format = workbook.add_format()
 
             header_format = workbook.add_format({'bold': True, 'bg_color': '#F0F0F0', 'border': 1})

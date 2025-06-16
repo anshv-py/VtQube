@@ -2,8 +2,6 @@ import sqlite3
 import datetime
 from typing import List, Tuple, Optional, Any, Dict
 from volume_data import VolumeData
-from PyQt5.QtWidgets import QMessageBox
-
 
 class DatabaseManager:
     def __init__(self, db_path="volume_monitor.db"):
@@ -13,7 +11,8 @@ class DatabaseManager:
 
     def _get_connection(self):
         if self.conn is None:
-            self.conn = sqlite3.connect(self.db_path)
+            self.conn = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
+            self.conn.execute("PRAGMA journal_mode=WAL;")
             self.conn.row_factory = sqlite3.Row
         return self.conn
 
@@ -31,7 +30,6 @@ class DatabaseManager:
             cursor.execute("PRAGMA table_info(alerts)")
             alerts_columns = [info[1] for info in cursor.fetchall()]
             if 'id' not in alerts_columns:
-                QMessageBox.warning(self, "Old 'alerts' table schema detected (missing 'id' column). Dropping and recreating 'alerts' table.")
                 cursor.execute("DROP TABLE IF EXISTS alerts")
                 conn.commit()
         cursor.execute("""
@@ -96,6 +94,8 @@ class DatabaseManager:
                 tsq_change_percent REAL,
                 ratio REAL,
                 remark TEXT,
+                alert_triggered TEXT,
+                is_baseline TEXT,
                 open REAL,
                 high REAL,
                 low REAL,
@@ -106,6 +106,8 @@ class DatabaseManager:
             )
         """)
         self._add_column_if_not_exists(cursor, "volume_logs", "remark", "TEXT")
+        self._add_column_if_not_exists(cursor, "volume_logs", "alert_triggered", "TEXT")
+        self._add_column_if_not_exists(cursor, "volume_logs", "is_baseline", "TEXT")
         self._add_column_if_not_exists(cursor, "volume_logs", "open", "REAL")
         self._add_column_if_not_exists(cursor, "volume_logs", "high", "REAL")
         self._add_column_if_not_exists(cursor, "volume_logs", "low", "REAL")
@@ -178,9 +180,9 @@ class DatabaseManager:
         cursor.execute("""
             INSERT INTO volume_logs (
                 timestamp, symbol, price, tbq, tsq, tbq_change_percent, tsq_change_percent, ratio, remark,
-                open, high, low, close, instrument_type,
+                alert_triggered, is_baseline, open, high, low, close, instrument_type,
                 expiry_date, strike_price
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data.timestamp,
             data.symbol,
@@ -191,6 +193,8 @@ class DatabaseManager:
             data.tsq_change_percent,
             data.ratio,
             remark,
+            data.alert_triggered,
+            data.is_baseline,
             data.open_price,
             data.high_price,
             data.low_price,
@@ -202,18 +206,17 @@ class DatabaseManager:
         conn.commit()
         return cursor.lastrowid
 
-    def get_volume_logs(self, limit: int = 500, symbol: Optional[str] = None,
+    def get_volume_logs(self, symbol: Optional[str] = None,
                         tbq_change_filter: Optional[Tuple[str, float]] = None,
                         tsq_change_filter: Optional[Tuple[str, float]] = None) -> List[Tuple]:
         conn = self._get_connection()
         cursor = conn.cursor()
-        query = "SELECT timestamp, symbol, price, tbq, tsq, tbq_change_percent, tsq_change_percent, ratio, remark, open, high, low, close, instrument_type, expiry_date, strike_price FROM volume_logs WHERE 1=1"
+        query = "SELECT timestamp, symbol, price, tbq, tsq, alert_triggered, is_baseline, tbq_change_percent, tsq_change_percent, ratio, remark, open, high, low, close, instrument_type, expiry_date, strike_price FROM volume_logs WHERE 1=1"
         params = []
 
         if symbol:
             query += " AND symbol = ?"
-            params.append(symbol)
-        print("13")        
+            params.append(symbol)   
         if tbq_change_filter:
             filter_type, value = tbq_change_filter
             if filter_type == 'greater_than':
@@ -232,9 +235,7 @@ class DatabaseManager:
                 query += " AND tsq_change_percent <= ?"
                 params.append(value)
 
-        query += " ORDER BY timestamp DESC LIMIT ?"
-        params.append(limit)
-        print("14")
+        query += " ORDER BY timestamp DESC"
         cursor.execute(query, params)
         return cursor.fetchall()
 
@@ -244,7 +245,7 @@ class DatabaseManager:
         today_start = datetime.datetime.now().strftime("%Y-%m-%d 00:00:00")
         today_end = datetime.datetime.now().strftime("%Y-%m-%d 23:59:59")
         cursor.execute(
-            "SELECT COUNT(*) FROM alerts WHERE timestamp BETWEEN ? AND ?",
+            "SELECT COUNT(*) FROM volume_logs WHERE alert_triggered='True'",
             (today_start, today_end)
         )
         return cursor.fetchone()[0]
@@ -391,7 +392,7 @@ class DatabaseManager:
                     (symbol, token, instrument_type)
                 )
             else:
-                QMessageBox.warning(self, "Instrument Error", f"WARNING: Could not find instrument token for symbol '{symbol}' of type '{instrument_type}'. Skipping.")
+                pass
         conn.commit()
 
     def get_user_instruments_by_type(self, instrument_type: str) -> List[Tuple[str, int]]:

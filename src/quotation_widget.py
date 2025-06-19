@@ -22,49 +22,52 @@ class AccountInfoWorker(QObject):
     def __init__(self, kite_instance: KiteConnect):
         super().__init__()
         self.kite = kite_instance
+        self.running = True
+
+    def stop(self):
+        self.running = False
 
     def run(self):
-        try:
-            if not self.kite:
-                self.error.emit("KiteConnect instance not available for fetching account info.")
-                return
+        while self.running:
+            try:
+                if not self.kite:
+                    self.error.emit("KiteConnect instance not available for fetching account info.")
+                    return
 
-            user_profile = self.kite.profile()
-            balance_data = self.kite.margins()
+                balance_data = self.kite.margins()
 
-            equity_margin = 0
-            commodity_margin = 0
-            if 'equity' in balance_data and 'net' in balance_data['equity']:
-                equity_margin = balance_data['equity']['net']
-            if 'commodity' in balance_data and 'net' in balance_data['commodity']:
-                commodity_margin = balance_data['commodity']['net']
+                equity_margin = balance_data.get('equity', {}).get('net', 0)
+                commodity_margin = balance_data.get('commodity', {}).get('net', 0)
+                total_balance = equity_margin + commodity_margin
 
-            positions = self.kite.positions()
-            realized_pnl, unrealized_pnl = 0, 0
-            for i in ['net', 'day']:
-                position = positions.get(i, [])
+                positions = self.kite.positions()
+                realized_pnl, unrealized_pnl = 0, 0
+                for i in ['net', 'day']:
+                    for p in positions.get(i, []):
+                        sell_value = p.get('sell_value', 0)
+                        buy_value = p.get('buy_value', 0)
+                        quantity = p.get('quantity', 0)
+                        last_price = p.get('last_price', 0)
+                        sell_price = p.get('sell_price', 0)
+                        multiplier = p.get('multiplier', 1)
 
-                for p in position:
-                    sell_value, buy_value = p.get('sell_value'), p.get('buy_value')
-                    quantity, last_price = p.get('quantity'), p.get('last_price')
-                    sell_price, multiplier = p.get('sell_price'), p.get('multiplier')
+                        realized_pnl += (sell_value - buy_value) + (quantity * sell_price * multiplier)
+                        unrealized_pnl += (sell_value - buy_value) + (quantity * last_price * multiplier)
 
-                    realized_pnl += (sell_value - buy_value) + (quantity * sell_price * multiplier)
-                    unrealized_pnl += (sell_value - buy_value) + (quantity * last_price * multiplier)
+                account_info = {
+                    "total_balance": total_balance,
+                    "equity_margin": equity_margin,
+                    "commodity_margin": commodity_margin,
+                    "realized_pnl": realized_pnl,
+                    "unrealized_pnl": unrealized_pnl
+                }
 
-            total_balance = equity_margin + commodity_margin
+                self.finished.emit(account_info)
 
-            account_info = {
-                "total_balance": total_balance,
-                "equity_margin": equity_margin,
-                "commodity_margin": commodity_margin,
-                "realized_pnl": realized_pnl,
-                "unrealized_pnl": unrealized_pnl
-            }
-            self.finished.emit(account_info)
+            except Exception as e:
+                self.error.emit(f"Error fetching account info: {str(e)}\n{traceback.format_exc()}")
 
-        except Exception as e:
-            self.error.emit(f"Error fetching account info: {str(e)}\n{traceback.format_exc()}")
+            QThread.sleep(30)
 
 
 class TradingWidget(QWidget):
@@ -81,26 +84,27 @@ class TradingWidget(QWidget):
         self.stock_manager = stock_manager
         self.futures_manager = futures_manager
         self.options_manager = options_manager
-        self.kite = kite_instance # Store KiteConnect instance
+        self.kite = kite_instance
         
-        self.current_selected_instrument: Optional[Tuple] = None # Stores (symbol, inst_type, exchange, token, expiry, strike)
-        self.live_quotation_data: Dict[str, VolumeData] = {} # Stores live data for the *single* displayed symbol
-        self.instrument_list: List[Tuple] = [] # List of all tradable instruments for search
+        self.current_selected_instrument: Optional[Tuple] = None
+        self.live_quotation_data: Dict[str, VolumeData] = {}
+        self.instrument_list: List[Tuple] = []
 
-        # Timer for periodically refreshing account balance and P&L
-        self.account_info_timer = QTimer(self)
-        self.account_info_timer.timeout.connect(self.fetch_and_display_account_info)
-        self.account_info_timer.start(30000) # Update every 30 seconds
+        self.account_info_thread = QThread(self)
+        self.account_worker = AccountInfoWorker(self.kite)
+        self.account_worker.moveToThread(self.account_info_thread)
 
+        self.account_info_thread.started.connect(self.account_worker.run)
+        self.account_worker.finished.connect(self._on_account_info_received, Qt.QueuedConnection)
+
+        self.account_info_thread.start()
         self.init_ui()
-        self.load_all_tradable_instruments() # Load all instruments once for search functionality
-        self.fetch_and_display_account_info() # Initial fetch of account details
+        self.load_all_tradable_instruments()
 
     def init_ui(self):
         main_layout = QVBoxLayout()
         self.setLayout(main_layout)
         afps = QApplication.instance().font().pointSize() if QApplication.instance() else 10
-        # Apply basic styling
         self.setStyleSheet(f"""
             QGroupBox {{
                 font-weight: bold;
@@ -158,11 +162,10 @@ class TradingWidget(QWidget):
         instrument_panel_layout = QVBoxLayout()
         instrument_panel_group.setLayout(instrument_panel_layout)
 
-        # Search Bar
         search_layout = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Enter Symbol (e.g., RELIANCE, NIFTY24AUGFUT)")
-        self.search_input.returnPressed.connect(self.on_search_input_entered) # Trigger search on Enter key
+        self.search_input.returnPressed.connect(self.on_search_input_entered)
         search_layout.addWidget(self.search_input)
         
         self.search_button = QPushButton("Search")
@@ -176,13 +179,12 @@ class TradingWidget(QWidget):
         self.completer.setFilterMode(Qt.MatchContains)
         self.search_input.setCompleter(self.completer)
 
-        # Instrument Details Display (Grid Layout)
         details_grid_layout = QGridLayout()
         self.detail_labels: Dict[str, QLabel] = {}
         details_fields = [
             "Symbol:", "Type:", "Exchange:", "Token:", "Expiry Date:", "Strike Price:", 
-            "Last Traded Price (LTP):", "Open:", "High:", "Low:", "Close:",
-            "Total Buy Quantity (TBQ):", "Total Sell Quantity (TSQ):", "Bid/Ask Ratio:", "Timestamp:"
+            "Last Traded Price (LTP):", "Open:", "High:", "Low:", "Close:", "Bid/Ask Ratio:",
+            "Total Buy Quantity (TBQ):", "Total Sell Quantity (TSQ):", "Timestamp:"
         ]
         for i, field in enumerate(details_fields):
             grid_row = i // 2
@@ -195,24 +197,22 @@ class TradingWidget(QWidget):
             self.detail_labels[field.lower().replace(':', '').replace(' ', '_')] = label
         instrument_panel_layout.addLayout(details_grid_layout)
 
-        # Buy/Sell Buttons
         trade_buttons_layout = QHBoxLayout()
         self.buy_button = QPushButton("Buy")
         self.buy_button.setStyleSheet(f"background-color: #28a745; color: white; border-radius: 5px; padding: 10px 20px; font-size: {afps * 1.2}pt;")
-        self.buy_button.setEnabled(False) # Disable until instrument is selected
+        self.buy_button.setEnabled(False)
         self.buy_button.clicked.connect(lambda: self.on_trade_button_clicked("BUY"))
         trade_buttons_layout.addWidget(self.buy_button)
 
         self.sell_button = QPushButton("Sell")
         self.sell_button.setStyleSheet(f"background-color: #dc3545; color: white; border-radius: 5px; padding: 10px 20px; font-size: {afps * 1.2}pt;")
-        self.sell_button.setEnabled(False) # Disable until instrument is selected
+        self.sell_button.setEnabled(False)
         self.sell_button.clicked.connect(lambda: self.on_trade_button_clicked("SELL"))
         trade_buttons_layout.addWidget(self.sell_button)
         instrument_panel_layout.addLayout(trade_buttons_layout)
 
-        top_section_layout.addWidget(instrument_panel_group, 2) # Takes 2/3 of space
+        top_section_layout.addWidget(instrument_panel_group, 2)
 
-        # Right Side: Account Summary
         account_summary_group = QGroupBox("Account Summary")
         account_summary_layout = QGridLayout()
         account_summary_group.setLayout(account_summary_layout)
@@ -228,11 +228,10 @@ class TradingWidget(QWidget):
         account_summary_layout.addWidget(self.realized_pnl_label, 1, 0, 1, 2)
         account_summary_layout.addWidget(self.unrealized_pnl_label, 2, 0, 1, 2)
         
-        top_section_layout.addWidget(account_summary_group, 1) # Takes 1/3 of space
+        top_section_layout.addWidget(account_summary_group, 1)
 
         main_layout.addLayout(top_section_layout)
 
-        # --- Bottom Section: Trade History ---
         trade_history_group = QGroupBox("Recent Trades")
         trade_history_layout = QVBoxLayout()
         trade_history_group.setLayout(trade_history_layout)
@@ -247,10 +246,9 @@ class TradingWidget(QWidget):
         main_layout.addWidget(trade_history_group)
 
         self.trade_history_table.doubleClicked.connect(self.on_trade_history_double_clicked)
-        self.refresh_trade_history_table() # Initial load of trade history
+        self.refresh_trade_history_table()
 
     def setup_trade_history_table_headers(self):
-        """Sets up the column headers and initial widths for the trade history table."""
         headers = [
             "Timestamp", "Symbol", "Type", "Transaction", "Quantity",
             "Price", "Order Type", "Product Type", "Status", "Message", "Order ID"
@@ -258,54 +256,39 @@ class TradingWidget(QWidget):
         self.trade_history_table.setColumnCount(len(headers))
         self.trade_history_table.setHorizontalHeaderLabels(headers)
         self.trade_history_table.horizontalHeader().setStretchLastSection(True)
-        # Set reasonable default widths
-        self.trade_history_table.setColumnWidth(0, 150) # Timestamp
-        self.trade_history_table.setColumnWidth(1, 100) # Symbol
-        self.trade_history_table.setColumnWidth(2, 80)  # Type
-        self.trade_history_table.setColumnWidth(3, 100) # Transaction
-        self.trade_history_table.setColumnWidth(4, 70)  # Quantity
-        self.trade_history_table.setColumnWidth(5, 80)  # Price
-        self.trade_history_table.setColumnWidth(6, 90)  # Order Type
-        self.trade_history_table.setColumnWidth(7, 100) # Product Type
-        self.trade_history_table.setColumnWidth(8, 80)  # Status
-        self.trade_history_table.setColumnWidth(9, 200) # Message
-        self.trade_history_table.setColumnWidth(10, 150) # Order ID
+        self.trade_history_table.setColumnWidth(0, 150)
+        self.trade_history_table.setColumnWidth(1, 100)
+        self.trade_history_table.setColumnWidth(2, 80)
+        self.trade_history_table.setColumnWidth(3, 100)
+        self.trade_history_table.setColumnWidth(4, 70)
+        self.trade_history_table.setColumnWidth(5, 80)
+        self.trade_history_table.setColumnWidth(6, 90)
+        self.trade_history_table.setColumnWidth(7, 100)
+        self.trade_history_table.setColumnWidth(8, 80)
+        self.trade_history_table.setColumnWidth(9, 200)
+        self.trade_history_table.setColumnWidth(10, 150)
 
 
     def load_all_tradable_instruments(self):
-        """
-        Loads all tradable instruments from all managers into a combined list for search.
-        This list populates the QCompleter for the search input.
-        """
         self.instrument_list = []
-        # Fetch instruments from all managers
         self.instrument_list.extend(self.stock_manager.get_all_tradable_instruments())
         self.instrument_list.extend(self.futures_manager.get_all_tradable_instruments())
         self.instrument_list.extend(self.options_manager.get_all_tradable_instruments())
         
-        # Sort for better search performance (if doing binary search, etc., though linear is fine for < 10k)
         self.instrument_list.sort(key=lambda x: x[0]) # Sort by symbol
 
-        # Populate completer model
         symbol_list = [inst[0] for inst in self.instrument_list]
-        # Use QStringListModel instead of QLineEdit for completer source
-        # This requires importing QStringListModel from PyQt5.QtCore
         from PyQt5.QtCore import QStringListModel
         self.completer.setModel(QStringListModel(symbol_list))
 
 
     def on_search_input_entered(self):
-        """
-        Handles search input: finds the instrument, updates the details display,
-        and requests live data for the selected symbol.
-        """
         search_text = self.search_input.text().strip().upper()
         
-        # Stop any previous live data requests
         if self.current_selected_instrument:
             self.stop_live_data_for_symbol.emit(self.current_selected_instrument[0])
 
-        self.clear_instrument_details() # Clear old details regardless of search outcome
+        self.clear_instrument_details()
         self.current_selected_instrument = None
         self.buy_button.setEnabled(False)
         self.sell_button.setEnabled(False)
@@ -324,7 +307,6 @@ class TradingWidget(QWidget):
         if found_instrument:
             self.current_selected_instrument = found_instrument
             self.update_instrument_details_display(found_instrument)
-            # Request MainWindow to start live data for this specific symbol
             self.request_live_data_for_symbol.emit(found_instrument[0]) 
             self.buy_button.setEnabled(True)
             self.sell_button.setEnabled(True)
@@ -336,10 +318,6 @@ class TradingWidget(QWidget):
 
 
     def update_instrument_details_display(self, instrument_details: Tuple):
-        """
-        Updates the instrument details section with the selected instrument's static info.
-        Live data will be updated separately by `update_quotation_data`.
-        """
         symbol = instrument_details[0]
         instrument_type = instrument_details[1]
         exchange = instrument_details[2]
@@ -350,7 +328,7 @@ class TradingWidget(QWidget):
         self.detail_labels["symbol"].setText(symbol)
         self.detail_labels["type"].setText(instrument_type)
         self.detail_labels["exchange"].setText(exchange)
-        self.detail_labels["token"].setText(str(instrument_token)) # Display token for debugging/info
+        self.detail_labels["token"].setText(str(instrument_token))
         self.detail_labels["expiry_date"].setText(expiry_date if expiry_date else "N/A")
         self.detail_labels["strike_price"].setText(f"₹{strike_price:.2f}" if isinstance(strike_price, (int, float)) else "N/A")
         
@@ -363,11 +341,10 @@ class TradingWidget(QWidget):
         self.detail_labels["total_sell_quantity_(tsq)"].setText("N/A")
         self.detail_labels["bid/ask_ratio"].setText("N/A")
         self.detail_labels["timestamp"].setText("N/A")
-        self.detail_labels["last_traded_price_(ltp)"].setStyleSheet("color: black;") # Reset color
+        self.detail_labels["last_traded_price_(ltp)"].setStyleSheet("color: black;")
 
 
     def clear_instrument_details(self):
-        """Clears all instrument detail labels to their default 'N/A' state."""
         for label_key in self.detail_labels:
             if label_key == "last_traded_price_(ltp)":
                 self.detail_labels[label_key].setText("N/A")
@@ -413,7 +390,6 @@ class TradingWidget(QWidget):
             QMessageBox.warning(self, "Trade Error", "Please select an instrument first by searching for it.")
             return
 
-        # Get the latest live data for the selected instrument
         current_live_data = self.live_quotation_data.get(self.current_selected_instrument[0])
         if not current_live_data or current_live_data.price is None:
             QMessageBox.warning(self, "Trade Error", "Live price data not available for the selected instrument. Please wait for an update.")
@@ -431,10 +407,9 @@ class TradingWidget(QWidget):
 
 
     def refresh_trade_history_table(self):
-        """Fetches and displays the user's trade history."""
         trades = self.db_manager.get_all_trades()
-        self.trade_history_table.setRowCount(0) # Clear existing rows
-        self.trade_history_table.setColumnCount(11) # Ensure correct number of columns
+        self.trade_history_table.setRowCount(0)
+        self.trade_history_table.setColumnCount(11)
         
         headers = [
             "Timestamp", "Symbol", "Type", "Transaction", "Quantity",
@@ -464,15 +439,14 @@ class TradingWidget(QWidget):
                 QTableWidgetItem(str(order_id) if order_id else "N/A")
             ]
             
-            # Set row background colors based on transaction type or status
-            row_color = QColor(255, 255, 255) # Default white
+            row_color = QColor(255, 255, 255)
             if transaction_type == "BUY":
-                row_color = QColor(220, 255, 220) # Light Green
+                row_color = QColor(220, 255, 220)
             elif transaction_type == "SELL":
-                row_color = QColor(255, 220, 220) # Light Red
+                row_color = QColor(255, 220, 220)
 
             if status == "REJECTED":
-                row_color = QColor(255, 180, 180) # Darker Red for rejected
+                row_color = QColor(255, 180, 180)
 
             for col_idx, item in enumerate(items):
                 item.setTextAlignment(Qt.AlignCenter)
@@ -480,56 +454,42 @@ class TradingWidget(QWidget):
                 self.trade_history_table.setItem(row_idx, col_idx, item)
 
         self.trade_history_table.resizeColumnsToContents()
-        self.trade_history_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch) # Stretch last section
+        self.trade_history_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
     def on_trade_history_double_clicked(self, index):
-        """
-        Handles double-click on trade history row to potentially show more details.
-        """
         row = index.row()
-        # Example: show order ID if it exists
-        order_id_item = self.trade_history_table.item(row, 10) # Order ID is in column 10
+        order_id_item = self.trade_history_table.item(row, 10)
         if order_id_item:
             QMessageBox.information(self, "Trade Details", f"Double-clicked Trade with Order ID: {order_id_item.text()}")
-            # In a real app, you might fetch full details from DB using trade_id or order_id
-            # and display them in a more detailed dialog.
 
 
     def fetch_and_display_account_info(self):
-        """
-        Fetches account balance and P&L asynchronously using AccountInfoWorker
-        and updates the display labels.
-        """
         if not self.kite:
             self.balance_label.setText("Total Balance: ₹ N/A (KiteConnect not initialized)")
             self.realized_pnl_label.setText("Realized P&L: ₹ N/A")
             self.unrealized_pnl_label.setText("Unrealized P&L: ₹ N/A")
             return
         
-        # Create and start a new thread for fetching account info
         self.account_worker = AccountInfoWorker(self.kite)
         self.account_thread = QThread()
         self.account_worker.moveToThread(self.account_thread)
 
         self.account_thread.started.connect(self.account_worker.run)
-        self.account_worker.finished.connect(self._on_account_info_received)
+        self.account_worker.finished.connect(self._on_account_info_received, Qt.QueuedConnection)
         self.account_worker.error.connect(self._on_account_info_error)
         
-        # Connect finished signals for proper thread cleanup
         self.account_worker.finished.connect(self.account_thread.quit)
-        self.account_worker.finished.connect(self.account_worker.deleteLater)
-        self.account_thread.finished.connect(self.account_thread.deleteLater)
+        self.account_worker.finished.connect(lambda: QTimer.singleShot(100, self.account_worker.deleteLater))
+        self.account_thread.finished.connect(lambda: QTimer.singleShot(100, self.account_thread.deleteLater))
 
         self.account_thread.start()
 
     def _on_account_info_received(self, info: Dict[str, Any]):
-        """Slot to receive account information from worker and update UI."""
         self.balance_label.setText(f"Total Balance: ₹{info.get('total_balance', 0.0):,.2f}")
         
         realized_pnl = info.get('realized_pnl', 0.0)
         unrealized_pnl = info.get('unrealized_pnl', 0.0)
 
-        # Set colors for P&L labels based on value
         realized_color = "green" if realized_pnl >= 0 else "red"
         unrealized_color = "green" if unrealized_pnl >= 0 else "red"
 
@@ -540,13 +500,14 @@ class TradingWidget(QWidget):
         self.unrealized_pnl_label.setStyleSheet(f"color: {unrealized_color}; font-weight: bold;")
 
     def _on_account_info_error(self, message: str):
-        """Slot to handle errors during account info fetching."""
         QMessageBox.warning(self, "Account Info Error", message)
         self.balance_label.setText("Total Balance: ₹ N/A (Error)")
         self.realized_pnl_label.setText("Realized P&L: ₹ N/A")
         self.unrealized_pnl_label.setText("Unrealized P&L: ₹ N/A")
     
     def stop_account_info_timer(self):
-        """Stops the account info refresh timer."""
-        self.account_info_timer.stop()
-        # No explicit thread stop needed as worker cleans up on finish
+        if hasattr(self, "account_worker"):
+            self.account_worker.stop()
+        if hasattr(self, "account_info_thread"):
+            self.account_info_thread.quit()
+            self.account_info_thread.wait()

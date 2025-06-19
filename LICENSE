@@ -1,13 +1,6 @@
-MIT License
+Proprietary Software License
 
-Copyright (c) 2025 anshv-py
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Copyright (c) 2025 Vishnu Vardhan Pylla
 
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
@@ -19,3 +12,70 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+(With Exclusive Modification Rights to a Named Individual)
+
+This Software License Agreement ("Agreement") is entered into on the 15th day of June 2025, by and between:
+
+Licensor: Ansh Vahinipati, having its principal office at Vellore Institute Of Technology, Chennai  ("Licensor")
+Licensee: Vishnu Vardhan Pylla, having its principal office at [Address] ("Licensee")
+
+1. DEFINITIONS
+1.1 "Software" means the proprietary software titled “VtQube”, including its source code, object code, documentation, and any updates, modifications, or enhancements provided by Licensor.
+1.2 "Authorized Individual" means Mr. Vishnu Vardhan Pylla, an employee or representative of the Licensee, who is exclusively permitted to access, modify, or update the Software.
+
+2. LICENSE GRANT
+Subject to the terms of this Agreement, Licensor hereby grants Licensee a non-transferable, non-sublicensable, non-exclusive license to:
+Use, install, and operate the Software for internal business or personal use;
+Access and modify the Software only through the Authorized Individual named in this Agreement;
+Create internal derivative works from the Software exclusively by the Authorized Individual, for Licensee's internal use only.
+
+3. RESTRICTIONS
+Except as explicitly authorized in Section 2, Licensee shall not:
+
+a. Permit any individual other than the Authorized Individual to modify, access, or alter the Software’s source code;
+b. Distribute, sublicense, lease, or rent the Software or its modified versions to any third party;
+c. Reverse engineer, decompile, or disassemble the Software (unless permitted by applicable law);
+d. Use the Software in a manner that violates any applicable law or regulation.
+
+4. OWNERSHIP
+The Software remains the exclusive intellectual property of the Licensor. Modifications made by the Authorized Individual shall also be considered derivative works owned by the Licensor unless otherwise agreed in writing.
+
+5. FEES AND PAYMENT
+Licensee agrees to pay Licensor a one-time/non-refundable/recurring license fee of ₹4500 (or $50) as a one-time payment as and when this software has been handed over.
+
+6. TERM AND TERMINATION
+This Agreement is effective as of the Effective Date and shall continue until terminated by either party upon 30 days’ prior written notice. Upon termination:
+The Licensee shall cease all use of the Software,
+All copies of the Software and modified versions must be returned or destroyed unless otherwise agreed.
+
+7. WARRANTY DISCLAIMER
+The Software is provided "AS IS", without warranty of any kind. Licensor disclaims all warranties, express or implied, including but not limited to merchantability, fitness for a particular purpose, and non-infringement.
+
+8. LIMITATION OF LIABILITY
+Licensor shall not be liable for any indirect, incidental, special, or consequential damages, including loss of profits or data, arising from the use or inability to use the Software.
+
+9. CONFIDENTIALITY
+Licensee agrees that the Software and any related documentation, including modified versions, shall be treated as confidential and shall not be disclosed to any third party without prior written consent from Licensor.
+
+10. GOVERNING LAW
+This Agreement shall be governed by and interpreted under the laws of Republic Of India, and the courts of Mumbai, Maharashtra shall have exclusive jurisdiction over any disputes.
+
+11. ENTIRE AGREEMENT
+This Agreement constitutes the complete and exclusive agreement between the parties relating to the Software and supersedes all prior agreements or communications, oral or written.
+
+IN WITNESS WHEREOF, the parties have executed this Agreement as of the Effective Date.
+Licensor:
+Signature: ___________________________
+Name:
+Title:
+
+Licensee:
+Signature: ___________________________
+Name:
+Title:
+
+Authorized Individual (Named Modifier):
+Name: Vishnu Vardhan Pylla
+Email/ID: 
+

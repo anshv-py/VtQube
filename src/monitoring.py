@@ -20,7 +20,7 @@ class MonitoringStatus:
     ERROR = "Error"
 
 class MonitoringThread(QThread):
-    alert_triggered = pyqtSignal(str, str, str, VolumeData)
+    alert_triggered = pyqtSignal(str, str, VolumeData)
     status_changed = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     volume_batch_update = pyqtSignal(list)
@@ -63,7 +63,7 @@ class MonitoringThread(QThread):
         self.db_manager = DatabaseManager(self.db_path)
 
         self.timer = QTimer()
-        self.timer.setInterval(3000)
+        self.timer.setInterval(2000)
         self.timer.timeout.connect(self._monitor_once)
 
         self.timer.moveToThread(self)
@@ -168,13 +168,6 @@ class MonitoringThread(QThread):
             tbq_change = (tbq - prev_tbq) / prev_tbq if prev_tbq else 0.0
             tsq_change = (tsq - prev_tsq) / prev_tsq if prev_tsq else 0.0
 
-            if abs(tbq_change) >= threshold:
-                self.first_monitored[symbol][0] = tbq
-                tbq_change = 0.0
-            if abs(tsq_change) >= threshold:
-                self.first_monitored[symbol][1] = tsq
-                tsq_change = 0.0
-
             ratio = tbq / tsq if tsq else (tbq if tbq else 0.0)
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -189,8 +182,8 @@ class MonitoringThread(QThread):
                 price=last_price,
                 tbq=tbq,
                 tsq=tsq,
-                tbq_change_percent=tbq_change,
-                tsq_change_percent=tsq_change,
+                tbq_change_percent=tbq_change * 100,
+                tsq_change_percent=tsq_change * 100,
                 ratio=ratio,
                 is_baseline=(tbq_change == 0.0 and tsq_change == 0.0),
                 open_price=open_price,
@@ -208,37 +201,27 @@ class MonitoringThread(QThread):
 
             remark = ""
             triggered = False
-            if abs(tbq_change) >= threshold and self._check_alert_cooldown(symbol, "TBQ Spike"):
-                self._update_alert_cooldown(symbol, "TBQ Spike")
-                remark += f"TBQ Spike ({tbq_change})" if tbq_change > 0 else f"TBQ Fall ({tbq_change})"
+            if abs(tbq_change) >= threshold:
+                remark += f"TBQ Spike ({tbq_change * 100:.2f}) - ({volume_data.tbq})" if tbq_change > 0 else f"TBQ Fall ({tbq_change * 100:.2f}) - ({volume_data.tbq})"
+                self.first_monitored[symbol][0] = tbq
+                tbq_change = 0.0
                 triggered = True
 
-            if abs(tsq_change) >= threshold and self._check_alert_cooldown(symbol, "TSQ Spike"):
-                self._update_alert_cooldown(symbol, "TSQ Spike")
+            if abs(tsq_change) >= threshold:
                 if remark:
                     remark += " || "
-                remark += f"TSQ Spike ({tsq_change})" if tsq_change > 0 else f"TSQ Fall ({tsq_change})"
+                remark += f"TSQ Spike ({tsq_change * 100:.2f}) - ({volume_data.tsq})" if tsq_change > 0 else f"TSQ Fall ({tsq_change:.2f}) - ({volume_data.tsq})"
+                self.first_monitored[symbol][1] = tsq
+                tsq_change = 0.0
                 triggered = True
 
             volume_data.remark = remark
-            volume_data.alert_triggered = triggered
+            volume_data.alert_triggered = str(triggered)
             if triggered:
                 self.alert_triggered.emit(symbol, remark, volume_data)
             result.append(volume_data)
 
         return result
-
-    def _check_alert_cooldown(self, symbol: str, alert_type: str, cooldown_seconds: int = 300) -> bool:
-        key = f"{symbol}_{alert_type}"
-        if key in self.alert_cooldown:
-            last_alert_time = self.alert_cooldown[key]
-            if (datetime.datetime.now() - last_alert_time).total_seconds() < cooldown_seconds:
-                return False
-        return True
-
-    def _update_alert_cooldown(self, symbol: str, alert_type: str):
-        key = f"{symbol}_{alert_type}"
-        self.alert_cooldown[key] = datetime.datetime.now()
 
     def stop_monitoring(self):
         self._stop_event.set()

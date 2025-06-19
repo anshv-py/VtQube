@@ -1,5 +1,7 @@
+import sip
 import datetime
 import pandas as pd
+from threading import Lock
 import xlsxwriter
 from typing import List, Dict, Any, Tuple, Optional
 from PyQt5.QtWidgets import (
@@ -7,12 +9,12 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
     QComboBox, QMenu, QMessageBox, QApplication, QDateEdit
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QObject, QThread
+from PyQt5.QtCore import Qt, pyqtSignal, QObject, QThread, QTimer, pyqtSlot
 from PyQt5.QtGui import QColor, QBrush
 from database import DatabaseManager
 
 class LogRefreshWorker(QObject):
-    finished = pyqtSignal(list)
+    finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
     def __init__(self, db_path):
@@ -22,39 +24,50 @@ class LogRefreshWorker(QObject):
 
     def run(self):
         try:
-            self.db_manager = DatabaseManager(self.db_path)
+            print("ICH 1")
             all_logs = []
-            all_volume_data = self.db_manager.get_volume_logs()
-            for volume_data in all_volume_data:
-                all_logs.append({
-                    "timestamp": volume_data['timestamp'],
-                    "symbol": volume_data['symbol'],
-                    "instrument_type": volume_data['instrument_type'],
-                    "tbq": volume_data['tbq'],
-                    "tbq_change_percent": volume_data['tbq_change_percent'],
-                    "tsq": volume_data['tsq'],
-                    "tsq_change_percent": volume_data['tsq_change_percent'],
-                    "price": volume_data['price'],
-                    "remark": volume_data['remark'],
-                    "open_price": volume_data['open'],
-                    "high_price": volume_data['high'],
-                    "low_price": volume_data['low'],
-                    "close_price": volume_data['close'],
-                    "type_filter_category": "Log" if volume_data['alert_triggered'] else "Alert",
-                    "is_baseline_log": volume_data['is_baseline']
-                })
-            all_logs.sort(key=lambda x: datetime.datetime.strptime(x['timestamp'], "%Y-%m-%d %H:%M:%S"))
-
-            baseline_log_tracker = {}
-            for log_entry in all_logs:
-                symbol = log_entry['symbol']
-                log_date = datetime.datetime.strptime(log_entry['timestamp'], "%Y-%m-%d %H:%M:%S").date()
-                if (symbol, log_date) not in baseline_log_tracker and log_entry['is_baseline_log']:
-                    baseline_log_tracker[(symbol, log_date)] = True
-
-            all_logs.sort(key=lambda x: datetime.datetime.strptime(x['timestamp'], "%Y-%m-%d %H:%M:%S"), reverse=True)
-            self.finished.emit(all_logs)
+            db_access_lock = Lock()
+            try:
+                with db_access_lock:
+                    self.db_manager = DatabaseManager(self.db_path)
+                    all_volume_data = self.db_manager.get_volume_logs()
+                    self.db_manager.close()
+                for volume_data in all_volume_data:
+                    all_logs.append({
+                        "timestamp": volume_data['timestamp'],
+                        "symbol": volume_data['symbol'],
+                        "instrument_type": volume_data['instrument_type'],
+                        "tbq": volume_data['tbq'],
+                        "tbq_change_percent": volume_data['tbq_change_percent'],
+                        "tsq": volume_data['tsq'],
+                        "tsq_change_percent": volume_data['tsq_change_percent'],
+                        "price": volume_data['price'],
+                        "remark": volume_data['remark'],
+                        "open_price": volume_data['open'],
+                        "high_price": volume_data['high'],
+                        "low_price": volume_data['low'],
+                        "close_price": volume_data['close'],
+                        "type_filter_category": "Baseline" if volume_data['is_baseline'] == "True" else "Log" if volume_data['alert_triggered'] == "False" else "Alert",
+                        "added": False
+                    })
+                print("ICH 2")
+                all_logs.sort(key=lambda x: datetime.datetime.strptime(x['timestamp'], "%Y-%m-%d %H:%M:%S"))
+            except Exception as e:
+                print(e)
+            try:
+                baseline_log_tracker = {}
+                for log_entry in all_logs:
+                    symbol = log_entry['symbol']
+                    log_date = datetime.datetime.strptime(log_entry['timestamp'], "%Y-%m-%d %H:%M:%S").date()
+                    if (symbol, log_date) not in baseline_log_tracker and log_entry['type_filter_category'] == "Baseline":
+                        baseline_log_tracker[(symbol, log_date)] = True
+                all_logs.sort(key=lambda x: datetime.datetime.strptime(x['timestamp'], "%Y-%m-%d %H:%M:%S"), reverse=True)
+                self.finished.emit(all_logs)
+                print("ICH 2.5: Finished emitted")
+            except Exception as e:
+                print("Here", e)
         except Exception as e:
+            print(e)
             self.error.emit(f"Failed to refresh logs: {str(e)}")
         finally:
             self.db_manager.close()
@@ -70,13 +83,11 @@ class LogsWidget(QWidget):
         self.current_page = 0
         self.logs_per_page = 50
         self.filtered_logs = []
-        print("3h11")
+        self._log_refreshing = False
         self.init_ui()
         self.log_thread = None
         self.log_worker = None
-        print("3h12")
         self.refresh_logs()
-        print("3h13")
 
     def init_ui(self):
         afps = QApplication.instance().font().pointSize() if QApplication.instance() else 10
@@ -192,6 +203,10 @@ class LogsWidget(QWidget):
         self.setLayout(main_layout)
 
         self.setMinimumSize(800, 600)
+    
+    @pyqtSlot(object)
+    def handle_logs_refreshed_main_thread(self, logs):
+        QTimer.singleShot(0, lambda: self.handle_logs_refreshed(logs))
 
     def populate_symbol_filter_combo(self):
         self.symbol_filter_combo.blockSignals(True)
@@ -217,20 +232,20 @@ class LogsWidget(QWidget):
             date_match = (start_date <= log_date <= end_date)
 
             is_alert = log_entry.get('type_filter_category') == "Alert"
-            is_baseline = log_entry.get('is_baseline_log') is True
+            is_baseline = log_entry.get('typ_filter_category') == "Baseline"
 
-            if symbol_match and type_match and date_match and (is_alert or is_baseline):
+            if symbol_match and type_match and date_match and (is_alert or is_baseline) and not log_entry["added"]:
+                log_entry["added"] = True
                 filtered_logs.append(log_entry)
 
         self.filtered_logs = filtered_logs
         self.current_page = 0
         self._populate_table(self.filtered_logs)
-        self.update_page_label()
-
     
     def update_page_label(self):
         total_pages = max(1, (len(self.filtered_logs) + self.logs_per_page - 1) // self.logs_per_page)
         self.page_label.setText(f"Page {self.current_page + 1} of {total_pages}")
+        print("ICH 3e")
 
     def next_page(self):
         if (self.current_page + 1) * self.logs_per_page < len(self.filtered_logs):
@@ -258,9 +273,10 @@ class LogsWidget(QWidget):
         for i, col_width in enumerate([col[1] for col in columns]):
             self.log_table.setColumnWidth(i, col_width)
 
+        print("ICH 3c")
         self.log_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         
-        self.seen_initial_log_for_symbol_date.clear() # This isn't strictly needed as 'is_initial_log' is pre-tagged
+        self.seen_initial_log_for_symbol_date.clear()
 
         start_idx = self.current_page * self.logs_per_page
         end_idx = start_idx + self.logs_per_page
@@ -271,7 +287,7 @@ class LogsWidget(QWidget):
 
             row_bg_color = QColor(240, 240, 240) if row_idx % 2 == 0 else QColor(255, 255, 255) # Light grey and white
 
-            if log_entry.get('is_initial_log', False):
+            if log_entry.get('type_filter_category', "Log") == "Baseline":
                 row_bg_color = QColor(200, 220, 255)
 
             for col_idx, col_name in enumerate(column_names):
@@ -283,7 +299,7 @@ class LogsWidget(QWidget):
                 elif col_name == "Symbol":
                     item_text = log_entry.get('symbol', '')
                 elif col_name == "Type":
-                    item_text = log_entry.get('type_filter_category', '')
+                    item_text = log_entry.get('instrument_type', '')
                 elif col_name == "Price":
                     price = log_entry.get('price')
                     item_text = f"₹{price:.2f}" if price is not None else ""
@@ -322,61 +338,80 @@ class LogsWidget(QWidget):
                 item = QTableWidgetItem(item_text)
                 item.setBackground(bg_brush)
                 self.log_table.setItem(row_idx, col_idx, item)
-            
+        
+        print("ICH 3d")
         self.update_page_label()
         self.log_table.resizeRowsToContents()
 
     def cleanup_thread(self):
-        log_thread = self.log_thread
-        if log_thread:
-            try:
-                if log_thread.isRunning():
-                    if self.log_worker:
-                        self.log_worker.finished.disconnect()
-                        self.log_worker.error.disconnect()
+        try:
+            if self.log_thread and not sip.isdeleted(self.log_thread):
+                if self.log_thread.isRunning():
+                    print("Stopping log thread...")
+                    self.log_thread.quit()
+                    self.log_thread.wait(3000)
+                self.log_thread.deleteLater()
+            else:
+                print("[Cleanup] log_thread is already deleted or None.")
+        except Exception as e:
+            print(f"[Cleanup] Thread cleanup error: {e}")
 
-                    log_thread.quit()
-                    log_thread.wait(1000)
+        try:
+            if self.log_worker and not sip.isdeleted(self.log_worker):
+                self.log_worker.deleteLater()
+            else:
+                print("[Cleanup] log_worker is already deleted or None.")
+        except Exception as e:
+            print(f"[Cleanup] Worker cleanup error: {e}")
 
-                    if log_thread.isRunning():
-                        log_thread.terminate()
-                        log_thread.wait(1000)
-                log_thread.deleteLater()
-            except RuntimeError:
-                pass
-        
-        log_worker = self.log_worker
-        if log_worker:
-            try:
-                log_worker.deleteLater()
-            except RuntimeError:
-                pass
         self.log_thread = None
         self.log_worker = None
 
     def refresh_logs(self):
-        self.cleanup_thread()
-        self.log_thread = QThread()
-        self.log_worker = LogRefreshWorker(self.db_manager.db_path)
-        self.log_worker.moveToThread(self.log_thread)
-        self.log_thread.started.connect(self.log_worker.run)
-        self.log_worker.finished.connect(self.handle_logs_refreshed)
-        self.log_worker.error.connect(self.handle_log_error)
+        if self._log_refreshing:
+            print("Already refreshing logs. Skipping this cycle.")
+            return
+        self._log_refreshing = True
+        try:
+            print("ICH")
+            self.cleanup_thread()
 
-        self.log_worker.finished.connect(self.log_thread.quit)
-        self.log_worker.error.connect(self.log_thread.quit)
+            self.log_thread = QThread()
+            self.log_worker = LogRefreshWorker(self.db_manager.db_path)
+            self.log_worker.moveToThread(self.log_thread)
+            print("ICH 2.9")
+            self.log_thread.started.connect(self.log_worker.run)
+            print("ICH 3")
+            self.log_worker.finished.connect(self.handle_logs_refreshed_main_thread, Qt.QueuedConnection)
+            print("ICH 4")
+            self.log_worker.error.connect(self.handle_log_error)
 
-        self.log_thread.finished.connect(self.log_worker.deleteLater)
-        self.log_thread.finished.connect(self.log_thread.deleteLater)
+            self.log_worker.finished.connect(self.log_thread.quit)
+            self.log_worker.finished.connect(lambda: QTimer.singleShot(100, self.log_worker.deleteLater))
+            self.log_thread.finished.connect(lambda: QTimer.singleShot(100, self.log_thread.deleteLater))
 
-        self.log_thread.start()
+            self.log_thread.start()
+        except Exception as e:
+            print(e)
+
 
     def handle_logs_refreshed(self, all_logs: List[Dict[str, Any]]):
-        self.alerts_cache = all_logs
-        self.populate_symbol_filter_combo()
-        self.filter_alerts_and_logs()
+        if not self:
+            print("Error here")
+            return
+        print("ICH 3.1")
+        self._log_refreshing = False
+        try:
+            self.alerts_cache = all_logs
+            print("ICH 3a")
+            self.populate_symbol_filter_combo()
+            print("ICH 3b")
+            self.filter_alerts_and_logs()
+        except Exception as e:
+            print("handle_logs_refreshed crashed:", e)
 
     def handle_log_error(self, error_message: str):
+        self._log_refreshing = False
         QMessageBox.critical(self, "Log Refresh Error", error_message)
 
     def show_context_menu(self, pos):
@@ -592,7 +627,6 @@ class LogsWidget(QWidget):
         if reply == QMessageBox.Yes:
             try:
                 self.db_manager.clear_all_logs()
-                self.refresh_logs()
                 self.populate_symbol_filter_combo()
                 QMessageBox.information(self, "Success", "All logs cleared successfully!")
 

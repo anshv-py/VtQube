@@ -27,6 +27,7 @@ from quotation_widget import TradingWidget
 from trading_dialog import TradingDialog
 from kiteconnect import KiteConnect
 import traceback
+from threading import Lock
 
 class VolumeDataTableModel(QAbstractTableModel):
     def __init__(self, data):
@@ -426,7 +427,7 @@ class MainWindow(QMainWindow):
         self.live_data_table.setAcceptDrops(True)
         self.live_data_table.setDropIndicatorShown(True)
         self.live_data_table.setDefaultDropAction(Qt.MoveAction)
-        self.live_data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.live_data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         monitoring_layout.addWidget(self.live_data_table)
         self.setCentralWidget(self.tab_widget)
         self.live_data_table.doubleClicked.connect(self.on_monitoring_table_double_clicked)
@@ -460,7 +461,7 @@ class MainWindow(QMainWindow):
 
         self.log_refresh_timer = QTimer(self)
         self.log_refresh_timer.setSingleShot(True)
-        self.log_refresh_timer.setInterval(3000)
+        self.log_refresh_timer.setInterval(10000)
         self.log_refresh_timer.timeout.connect(self.logs_widget.refresh_logs)
 
         self.quotation_fetcher_thread: Optional[QThread] = None
@@ -601,7 +602,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Instruments", "No instruments displayed in the table to reorder.")
             return
 
-        self._current_monitoring_order = new_monitored_order # Store the new order
+        self._current_monitoring_order = new_monitored_order
 
         QMessageBox.information(self, "Order Applied", "Display order saved. Restart monitoring to apply the new order.")
 
@@ -711,7 +712,7 @@ class MainWindow(QMainWindow):
                     self.config.access_token = access_token
                     self.start_monitor_btn.setEnabled(True)
                     QTimer.singleShot(100, self._safe_fetch)
-                self.init_success.emit()
+                    self.init_success.emit()
             except Exception as e:
                 self.kite = None
                 QMessageBox.critical(self, "KiteConnect Error", f"Failed to initialize KiteConnect from saved settings (possibly expired token): {e}\nPlease click 'Fetch Access Token' to re-login.")
@@ -877,17 +878,19 @@ class MainWindow(QMainWindow):
     def handle_volume_batch(self, batch: List[VolumeData]):
         self.update_live_data_table_batch(batch)
     
-    def update_live_data_table_batch(self, batch):
+    def update_live_data_table_batch(self, batch: List[VolumeData]):
         symbol_index = {v.symbol: i for i, v in enumerate(self.live_data)}
         for data in batch:
+            if data.symbol not in self.current_live_data:
+                data.is_baseline = True
             if data.symbol in symbol_index:
                 self.live_data[symbol_index[data.symbol]] = data
             else:
                 self.live_data.append(data)
             if data.alert_triggered or data.is_baseline:
-                remark_text = "ALERT" if data.alert_triggered else "Baseline"
-                self.volume_data_log_queue.append((data, remark_text))
-
+                self.volume_data_log_queue.append((data, data.remark))
+        
+        self.update_monitoring_stat_cards()
         self.table_model.update_data(self.live_data)
 
         if not self.log_refresh_timer.isActive():
@@ -896,11 +899,13 @@ class MainWindow(QMainWindow):
     def flush_log_queue(self):
         if not self.volume_data_log_queue:
             return
+        db_access_lock = Lock()
         try:
-            db = DatabaseManager(self.db_manager.db_path)
-            for data, remark in self.volume_data_log_queue:
-                db.log_volume_data(data, remark)
-            db.close()
+            with db_access_lock:
+                db = DatabaseManager(self.db_manager.db_path)
+                for data, remark in self.volume_data_log_queue:
+                    db.log_volume_data(data, remark)
+                db.close()
         except Exception as e:
             print("Log queue error:", e)
         self.volume_data_log_queue.clear()
@@ -932,75 +937,75 @@ class MainWindow(QMainWindow):
     def on_alert_triggered(self, symbol: str, combined_message_type_string: str, data: VolumeData):
         alerts_count = self.db_manager.get_alerts_count_today()
         self.update_stat_card("Total Alerts Today", str(alerts_count))
+        try:
+            telegram_enabled = self.config.telegram_enabled
+            telegram_bot_token = self.db_manager.get_setting("telegram_bot_token")
+            telegram_chat_id = self.db_manager.get_setting("telegram_chat_id")
 
-        telegram_enabled = self.db_manager.get_setting("enable_telegram_notifications", "False") == "True"
-        telegram_bot_token = self.db_manager.get_setting("telegram_bot_token")
-        telegram_chat_id = self.db_manager.get_setting("telegram_chat_id")
+            wave_obj = sa.WaveObject.from_wave_file("assets/alert.wav")
+            wave_obj.play()
 
-        wave_obj = sa.WaveObject.from_wave_file("alert.wav")
-        wave_obj.play()
+            if telegram_enabled and telegram_bot_token and telegram_chat_id:
+                try:
+                    message_parts = []
+                    message_parts.append("🚨 STOCK ALERT 🚨")
+                    message_parts.append(f"ALERT! {symbol} - {data.instrument_type if data.instrument_type else 'N/A'} - {combined_message_type_string}")
+                    
+                    if data.ratio is not None:
+                        message_parts.append(f"Ratio: {data.ratio:.2f}")
+                    
+                    ohlc_info = (
+                        f"₹{data.price:.2f}(LTP) -- "
+                        f"₹{data.open_price:.2f} (O) -- "
+                        f"₹{data.high_price:.2f}(H) -- "
+                        f"₹{data.low_price:.2f} (L) -- "
+                        f"₹{data.close_price:.2f} (C)"
+                    )
+                    message_parts.append(ohlc_info)
 
-        if telegram_enabled and telegram_bot_token and telegram_chat_id:
-            try:
-                message_parts = []
-                message_parts.append("🚨 STOCK ALERT 🚨")
-                message_parts.append(f"ALERT! {symbol} - {data.instrument_type if data.instrument_type else 'N/A'} - {combined_message_type_string}")
-                
-                if data.ratio is not None:
-                    message_parts.append(f"Ratio: {data.ratio:.2f}")
-                
-                ohlc_info = (
-                    f"₹{data.price:.2f}(LTP) -- "
-                    f"₹{data.open_price:.2f} (O) -- "
-                    f"₹{data.high_price:.2f}(H) -- "
-                    f"₹{data.low_price:.2f} (L) -- "
-                    f"₹{data.close_price:.2f} (C)"
-                )
-                message_parts.append(ohlc_info)
+                    tbq_info = []
+                    tsq_info = []
 
-                tbq_info = []
-                tsq_info = []
+                    is_tbq_alert = "tbq" in combined_message_type_string.lower()
+                    is_tsq_alert = "tsq" in combined_message_type_string.lower()
 
-                is_tbq_alert = "tbq" in combined_message_type_string.lower()
-                is_tsq_alert = "tsq" in combined_message_type_string.lower()
+                    if is_tbq_alert:
+                        if data.day_high_tbq is not None:
+                            tbq_info.append(f"TBQ Day High: {data.day_high_tbq:,}")
+                        if data.day_low_tbq is not None:
+                            if "spike" not in combined_message_type_string.lower():
+                                tbq_info.append(f"TBQ Day Low: {data.day_low_tbq:,}")
 
-                if is_tbq_alert:
-                    if data.day_high_tbq is not None:
-                        tbq_info.append(f"TBQ Day High: {data.day_high_tbq:,}")
-                    if data.day_low_tbq is not None:
-                        if "spike" not in combined_message_type_string.lower():
-                            tbq_info.append(f"TBQ Day Low: {data.day_low_tbq:,}")
+                    if is_tsq_alert:
+                        if data.day_high_tsq is not None:
+                            tsq_info.append(f"TSQ Day High: {data.day_high_tsq:,}")
+                        if data.day_low_tsq is not None:
+                            if "spike" not in combined_message_type_string.lower():
+                                tsq_info.append(f"TSQ Day Low: {data.day_low_tsq:,}")
+                    
+                    tbq_tsq_line = []
+                    if tbq_info:
+                        tbq_tsq_line.append(" -- ".join(tbq_info))
+                    if tsq_info:
+                        tbq_tsq_line.append(" -- ".join(tsq_info))
+                    
+                    if tbq_tsq_line:
+                        message_parts.append(" & ".join(tbq_tsq_line))
 
-                if is_tsq_alert:
-                    if data.day_high_tsq is not None:
-                        tsq_info.append(f"TSQ Day High: {data.day_high_tsq:,}")
-                    if data.day_low_tsq is not None:
-                        if "spike" not in combined_message_type_string.lower():
-                            tsq_info.append(f"TSQ Day Low: {data.day_low_tsq:,}")
-                
-                tbq_tsq_line = []
-                if tbq_info:
-                    tbq_tsq_line.append(" -- ".join(tbq_info))
-                if tsq_info:
-                    tbq_tsq_line.append(" -- ".join(tsq_info))
-                
-                if tbq_tsq_line:
-                    message_parts.append(" & ".join(tbq_tsq_line))
+                    formatted_time = datetime.datetime.strptime(data.timestamp, "%Y-%m-%d %H:%M:%S").strftime("%I:%M:%S %p")
+                    formatted_date = datetime.datetime.strptime(data.timestamp, "%Y-%m-%d %H:%M:%S").strftime("%d-%m-%Y")
+                    message_parts.append(f"Time: {formatted_time}")
+                    message_parts.append(f"Date: {formatted_date}")
 
-                formatted_time = datetime.datetime.strptime(data.timestamp, "%Y-%m-%d %H:%M:%S").strftime("%I:%M:%S %p")
-                formatted_date = datetime.datetime.strptime(data.timestamp, "%Y-%m-%d %H:%M:%S").strftime("%d-%m-%Y")
-                message_parts.append(f"Time: {formatted_time}")
-                message_parts.append(f"Date: {formatted_date}")
+                    telegram_message = "\n".join(message_parts)
+                    send_telegram_message(telegram_bot_token, telegram_chat_id, telegram_message)
+                except Exception as e:
+                    print(e)
 
-                telegram_message = "\n".join(message_parts)
-
-                send_telegram_message(telegram_bot_token, telegram_chat_id, telegram_message)
-            except Exception as e:
-                QMessageBox.warning(self, "Telegram Error", f"Failed to send Telegram alert: {e}")
-
-        if self.config.auto_trade_enabled:
-            self.execute_auto_trade(data)
-        self.logs_widget.refresh_logs()
+            if self.config.auto_trade_enabled:
+                self.execute_auto_trade(data)
+        except Exception as e:
+            print(e)
     
     def execute_auto_trade(self, data: VolumeData):
         try:

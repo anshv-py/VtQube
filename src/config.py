@@ -26,6 +26,7 @@ class AlertConfig:
                  tbq_tsq_threshold: float,
                  start_time: Optional[datetime.time],
                  end_time: Optional[datetime.time],
+                 telegram_enabled: Optional[bool] = False,
                  telegram_bot_token: Optional[str] = None,
                  telegram_chat_id: Optional[str] = None,
                  auto_trade_enabled: bool = False,
@@ -35,6 +36,7 @@ class AlertConfig:
         self.tbq_tsq_threshold = tbq_tsq_threshold
         self.start_time = start_time
         self.end_time = end_time
+        self.telegram_enabled = telegram_enabled
         self.telegram_bot_token = telegram_bot_token
         self.telegram_chat_id = telegram_chat_id
 
@@ -65,6 +67,7 @@ class AlertConfig:
         except ValueError:
             self.end_time = None
 
+        self.telegram_enabled = db_manager.get_setting("telegram_enabled", "False") == "Enabled"
         self.telegram_bot_token = db_manager.get_setting("telegram_bot_token")
         self.telegram_chat_id = db_manager.get_setting("telegram_chat_id")
 

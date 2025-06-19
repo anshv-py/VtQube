@@ -1,5 +1,6 @@
 import threading
 import urllib.parse
+import urllib.request
 import requests
 
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -93,21 +94,26 @@ class RequestTokenServer(QObject):
 
 def send_telegram_message(bot_token: str, chat_id: str, message: str):
     if not bot_token or not chat_id:
+        print("[Telegram] Missing bot_token or chat_id.")
         return
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         'chat_id': chat_id,
         'text': message,
-        'parse_mode': 'HTML'
+        'parse_mode': "HTML"
     }
 
     try:
-        if requests:
-            response = requests.post(url, data=payload)
-            response.raise_for_status() 
-        else:
+        response = requests.post(url, data=payload, timeout=5)
+        response.raise_for_status()
+        print("[Telegram] Message sent.")
+    except Exception as e:
+        print(f"[Telegram] Requests failed: {e}. Falling back to urllib.")
+        try:
             data = urllib.parse.urlencode(payload).encode('utf-8')
             req = urllib.request.Request(url, data=data, method='POST')
-    except Exception as e:
-        pass
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                print(f"[Telegram] Sent via urllib. Status: {resp.status}")
+        except Exception as e2:
+            print(f"[Telegram] Urllib failed: {e2}")
